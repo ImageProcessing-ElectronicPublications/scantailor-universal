@@ -127,18 +127,18 @@ BinaryImage binarizeSauvola(
             assert(area > 0); // because window_size > 0 and w > 0 and h > 0
 
             QRect const rect(left, top, right - left, bottom - top);
-            long double const window_sum = integral_image.sum(rect);
-            long double const window_sqsum = integral_sqimage.sum(rect);
+            double const window_sum = integral_image.sum(rect);
+            double const window_sqsum = integral_sqimage.sum(rect);
 
-            long double const r_area = 1.0 / area;
-            long double const mean = window_sum * r_area;
-            long double const sqmean = window_sqsum * r_area;
+            double const r_area = 1.0 / area;
+            double const mean = window_sum * r_area;
+            double const sqmean = window_sqsum * r_area;
 
-            long double const variance = sqmean - mean * mean;
-            long double const deviation = sqrt(fabs(variance));
-            long double const frac_s = deviation / range;
+            double const variance = sqmean - mean * mean;
+            double const deviation = sqrt(fabs(variance));
+            double const frac_s = deviation / range;
 
-            long double const threshold = mean * (1.0 - k * (1.0 - (frac_s + frac_d)));
+            double const threshold = mean * (1.0 - k * (1.0 - (frac_s + frac_d)));
 
             uint32_t const mask = msb >> (x & 31);
             int const origin = gray_line[x];
@@ -221,7 +221,7 @@ BinaryImage binarizeWolf(
     std::vector<float> means(w * h, 0);
     std::vector<float> deviations(w * h, 0);
 
-    long double max_deviation = 1.0;
+    double max_deviation = 1.0;
 
     for (int y = 0; y < h; y++)
     {
@@ -236,15 +236,15 @@ BinaryImage binarizeWolf(
             assert(area > 0); // because window_size > 0 and w > 0 and h > 0
 
             QRect const rect(left, top, right - left, bottom - top);
-            long double const window_sum = integral_image.sum(rect);
-            long double const window_sqsum = integral_sqimage.sum(rect);
+            double const window_sum = integral_image.sum(rect);
+            double const window_sqsum = integral_sqimage.sum(rect);
 
-            long double const r_area = 1.0 / area;
-            long double const mean = window_sum * r_area;
-            long double const sqmean = window_sqsum * r_area;
+            double const r_area = 1.0 / area;
+            double const mean = window_sum * r_area;
+            double const sqmean = window_sqsum * r_area;
 
-            long double const variance = sqmean - mean * mean;
-            long double const deviation = sqrt(fabs(variance));
+            double const variance = sqmean - mean * mean;
+            double const deviation = sqrt(fabs(variance));
             max_deviation = std::max(max_deviation, deviation);
             means[w * y + x] = mean;
             deviations[w * y + x] = deviation;
@@ -272,9 +272,9 @@ BinaryImage binarizeWolf(
             float const mean = means[y * w + x];
             float const deviation = deviations[y * w + x];
             
-            long double const base = mean - min_gray_level;
-            long double const frac_sn = deviation / max_deviation;
-            long double const threshold = base * (1.0 - k * (1.0 - (frac_sn + frac_d))) + min_gray_level;
+            double const base = mean - min_gray_level;
+            double const frac_sn = deviation / max_deviation;
+            double const threshold = base * (1.0 - k * (1.0 - (frac_sn + frac_d))) + min_gray_level;
 
             uint32_t const mask = msb >> (x & 31);
             unsigned char const origin = gray_line[x];
@@ -359,9 +359,9 @@ BinaryImage binarizeWindow(
 
     int const areaFull = w * h;
     assert(areaFull > 0); // because w > 0 and h > 0
-    long double const meanFull = integral_image.sum(QRect(0, 0, w, h)) / areaFull;
-    long double deviationMax = 0.0;
-    long double deviationMin = 256.0;
+    double const meanFull = integral_image.sum(QRect(0, 0, w, h)) / areaFull;
+    double deviationMax = 0.0;
+    double deviationMin = 256.0;
     
     for (int y = 0; y < h; y++)
     {
@@ -376,22 +376,22 @@ BinaryImage binarizeWindow(
             assert(area > 0); // because window_size > 0 and w > 0 and h > 0
 
             QRect const rect(left, top, right - left, bottom - top);
-            long double const window_sum = integral_image.sum(rect);
-            long double const window_sqsum = integral_sqimage.sum(rect);
+            double const window_sum = integral_image.sum(rect);
+            double const window_sqsum = integral_sqimage.sum(rect);
 
-            long double const r_area = 1.0 / area;
-            long double const mean = window_sum * r_area;
-            long double const sqmean = window_sqsum * r_area;
+            double const r_area = 1.0 / area;
+            double const mean = window_sum * r_area;
+            double const sqmean = window_sqsum * r_area;
 
-            long double const variance = sqmean - mean * mean;
-            long double const deviation = sqrt(fabs(variance));
+            double const variance = sqmean - mean * mean;
+            double const deviation = sqrt(fabs(variance));
 
             deviationMax = (deviation > deviationMax) ? deviation : deviationMax;
             deviationMin = (deviation < deviationMin) ? deviation : deviationMin;
         }
     }
 
-    long double deviationD = (deviationMax > deviationMin) ? (deviationMax - deviationMin) : 1.0;
+    double deviationD = (deviationMax > deviationMin) ? (deviationMax - deviationMin) : 1.0;
 
     BinaryImage bw_img(w, h);
     if (bw_img.isNull())
@@ -416,22 +416,22 @@ BinaryImage binarizeWindow(
             assert(area > 0); // because window_size > 0 and w > 0 and h > 0
 
             QRect const rect(left, top, right - left, bottom - top);
-            long double const window_sum = integral_image.sum(rect);
-            long double const window_sqsum = integral_sqimage.sum(rect);
+            double const window_sum = integral_image.sum(rect);
+            double const window_sqsum = integral_sqimage.sum(rect);
 
-            long double const r_area = 1.0 / area;
-            long double const mean = window_sum * r_area;
-            long double const sqmean = window_sqsum * r_area;
+            double const r_area = 1.0 / area;
+            double const mean = window_sum * r_area;
+            double const sqmean = window_sqsum * r_area;
 
-            long double const variance = sqmean - mean * mean;
-            long double const deviation = sqrt(fabs(variance));
+            double const variance = sqmean - mean * mean;
+            double const deviation = sqrt(fabs(variance));
 
-            long double const md = (mean + 1.0 - delta) / (meanFull + deviation + 1.0);
-            long double const kdm = (meanFull + meanFull + 1.0) / (deviation + 1.0);
-            long double const kds = (deviation - deviationMin) / deviationD;
-            long double const kd = 1.0 + kdm * kds;
+            double const md = (mean + 1.0 - delta) / (meanFull + deviation + 1.0);
+            double const kdm = (meanFull + meanFull + 1.0) / (deviation + 1.0);
+            double const kds = (deviation - deviationMin) / deviationD;
+            double const kd = 1.0 + kdm * kds;
 
-            long double const threshold = mean * (1.0 - k * 3.0 * md / kd);
+            double const threshold = mean * (1.0 - k * 3.0 * md / kd);
             
             uint32_t const mask = msb >> (x & 31);
             unsigned char const origin = gray_line[x];

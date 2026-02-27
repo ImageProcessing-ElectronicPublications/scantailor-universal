@@ -134,7 +134,12 @@ static QImage rgbToGrayscale(QImage const& src)
         uint8_t* dst_line = dst.scanLine(y);
         const QRgb* src_line = reinterpret_cast<const QRgb*>(src.scanLine(y));
         for (int x = 0; x < width; ++x) {
-            dst_line[x] = static_cast<uint8_t>(qGray(*src_line++));
+            // Inline qGray arithmetic for better auto-vectorization.
+            // qGray(rgb) = (r*11 + g*16 + b*5) / 32
+            uint32_t const p = src_line[x];
+            dst_line[x] = static_cast<uint8_t>(
+                ((p >> 16 & 0xFF) * 11 + (p >> 8 & 0xFF) * 16 + (p & 0xFF) * 5) >> 5
+            );
         }
     }
 

@@ -279,6 +279,31 @@ if (OPENMP_FOUND)
     set (CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} ${OpenMP_EXE_LINKER_FLAGS}")
 endif()
 
+# Enable SIMD auto-vectorization for image processing hot paths.
+# SSE2 is mandatory on x86-64 and safe to enable unconditionally.
+OPTION(ENABLE_SIMD "Enable SIMD auto-vectorization hints" ON)
+IF(ENABLE_SIMD)
+    IF(MSVC)
+        # MSVC auto-vectorizes at /O2. /arch:SSE2 is default on x64.
+        # /fp:fast allows more aggressive FP optimizations.
+        SET(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} /fp:fast")
+        SET(CMAKE_CXX_FLAGS_RELWITHDEBINFO "${CMAKE_CXX_FLAGS_RELWITHDEBINFO} /fp:fast")
+    ELSEIF(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        INCLUDE(CheckCXXCompilerFlag)
+        # -ftree-vectorize is included in -O2, but explicit doesn't hurt.
+        CHECK_CXX_COMPILER_FLAG("-ftree-vectorize" HAS_TREE_VECTORIZE)
+        IF(HAS_TREE_VECTORIZE)
+            SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -ftree-vectorize")
+        ENDIF()
+        # -ffast-math for binarization hot paths (safe: we only need ~8-bit precision).
+        CHECK_CXX_COMPILER_FLAG("-ffast-math" HAS_FAST_MATH)
+        IF(HAS_FAST_MATH)
+            SET(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -ffast-math")
+            SET(CMAKE_CXX_FLAGS_RELWITHDEBINFO "${CMAKE_CXX_FLAGS_RELWITHDEBINFO} -ffast-math")
+        ENDIF()
+    ENDIF()
+ENDIF()
+
 IF (EXIV2_FOUND)
         ADD_DEFINITIONS(-DHAVE_EXIV2)
         INCLUDE_DIRECTORIES("${EXIV2_INCLUDE_DIR}")

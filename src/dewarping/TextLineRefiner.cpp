@@ -31,6 +31,7 @@
 #include <QPainter>
 #include <QPen>
 #include <QColor>
+#include <QString>
 #include <Qt>
 #include <QtGlobal>
 #include <QDebug>
@@ -146,28 +147,42 @@ TextLineRefiner::refine(
 
     Grid<float> gradient(m_image.width(), m_image.height(), /*padding=*/0);
 
-    // Start with a rather strong blur.
-    float h_sigma = (4.0f / 200.f) * m_dpi.horizontal();
-    float v_sigma = (4.0f / 200.f) * m_dpi.vertical();
-    calcBlurredGradient(gradient, h_sigma, v_sigma);
+    // Multi-scale coarse-to-fine evolution.
+    // Coarser scales (stronger blur) capture the broad shape of text lines,
+    // while finer scales lock onto precise edge positions.
+    // Previous code used only 2 scales; literature recommends 4-6.
+    float const base_h_sigma = (4.0f / 200.f) * m_dpi.horizontal();
+    float const base_v_sigma = (4.0f / 200.f) * m_dpi.vertical();
 
-    for (Snake& snake : snakes) {
-        evolveSnake(snake, gradient, ON_CONVERGENCE_STOP);
-    }
-    if (dbg) {
-        dbg->add(visualizeSnakes(snakes, &gradient), "evolved_snakes1");
-    }
+    struct ScalePass {
+        float sigma_factor;
+        int iterations;
+        OnConvergence on_convergence;
+    };
 
-    // Less blurring this time.
-    h_sigma *= 0.5f;
-    v_sigma *= 0.5f;
-    calcBlurredGradient(gradient, h_sigma, v_sigma);
+    ScalePass const passes[] = {
+        { 1.0f,  20, ON_CONVERGENCE_STOP },      // Coarsest: capture broad shape
+        { 0.6f,  20, ON_CONVERGENCE_STOP },       // Medium-coarse: refine curvature
+        { 0.35f, 25, ON_CONVERGENCE_STOP },       // Medium-fine: sharpen edges
+        { 0.2f,  35, ON_CONVERGENCE_GO_FINER },   // Finest: lock onto precise positions
+    };
 
-    for (Snake& snake : snakes) {
-        evolveSnake(snake, gradient, ON_CONVERGENCE_GO_FINER);
-    }
-    if (dbg) {
-        dbg->add(visualizeSnakes(snakes, &gradient), "evolved_snakes2");
+    int pass_num = 0;
+    for (ScalePass const& pass : passes) {
+        ++pass_num;
+
+        calcBlurredGradient(gradient, base_h_sigma * pass.sigma_factor,
+                                      base_v_sigma * pass.sigma_factor);
+
+        for (Snake& snake : snakes) {
+            snake.iterationsRemaining = pass.iterations;
+            evolveSnake(snake, gradient, pass.on_convergence);
+        }
+
+        if (dbg) {
+            QString label = QString("evolved_snakes%1").arg(pass_num);
+            dbg->add(visualizeSnakes(snakes, &gradient), label.toLatin1().constData());
+        }
     }
 
     // Convert from snakes back to polylines.

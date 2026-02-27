@@ -52,6 +52,7 @@
 #include "imageproc/SeedFill.h"
 #include "imageproc/Constants.h"
 #include "imageproc/Grayscale.h"
+#include "imageproc/GaussBlur.h"
 #include "imageproc/RasterOp.h"
 #include "imageproc/GrayRasterOp.h"
 #include "imageproc/PolynomialSurface.h"
@@ -240,6 +241,80 @@ void combineMixed(
         mixed_line += mixed_stride;
         bw_content_line += bw_content_stride;
         bw_mask_line += bw_mask_stride;
+    }
+}
+
+/**
+ * Feathered version of combineMixed.  Uses a grayscale alpha mask
+ * (0 = full color/gray, 255 = full binarized) to blend between the
+ * original image and the binarized content at picture zone boundaries.
+ * This eliminates the hard seam visible in the binary-mask version.
+ */
+template<typename MixedPixel>
+void combineMixedFeathered(
+    QImage& mixed, BinaryImage const& bw_content,
+    GrayImage const& alpha_mask)
+{
+    MixedPixel* mixed_line = reinterpret_cast<MixedPixel*>(mixed.bits());
+    int const mixed_stride = mixed.bytesPerLine() / sizeof(MixedPixel);
+    uint32_t const* bw_content_line = bw_content.data();
+    int const bw_content_stride = bw_content.wordsPerLine();
+    uint8_t const* alpha_line = alpha_mask.data();
+    int const alpha_stride = alpha_mask.stride();
+    int const width = mixed.width();
+    int const height = mixed.height();
+    uint32_t const msb = uint32_t(1) << 31;
+
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            int const alpha = alpha_line[x]; // 0=color, 255=binarized
+
+            if (alpha == 0) {
+                // Fully in picture zone — keep original, but reserve
+                // pure black/white.
+                mixed_line[x] = reserveBlackAndWhite<MixedPixel>(mixed_line[x]);
+            } else if (alpha == 255) {
+                // Fully in text zone — use binarized content.
+                uint32_t tmp = bw_content_line[x >> 5];
+                tmp >>= (31 - (x & 31));
+                tmp &= uint32_t(1);
+                --tmp;
+                tmp |= 0xff000000;
+                mixed_line[x] = static_cast<MixedPixel>(tmp);
+            } else {
+                // Feathered transition zone — blend.
+                // Get binarized value (0x00 for black, 0xFF for white).
+                uint32_t bw_bit = bw_content_line[x >> 5];
+                bw_bit >>= (31 - (x & 31));
+                bw_bit &= uint32_t(1);
+                uint8_t const bw_val = bw_bit ? 0x00 : 0xFF;
+
+                MixedPixel const orig = reserveBlackAndWhite<MixedPixel>(mixed_line[x]);
+
+                if (sizeof(MixedPixel) == 1) {
+                    // Grayscale: simple alpha blend.
+                    int const o = static_cast<uint8_t>(orig);
+                    int const blended = (o * (255 - alpha) + bw_val * alpha + 127) / 255;
+                    mixed_line[x] = static_cast<MixedPixel>(blended);
+                } else {
+                    // RGB32/ARGB32: blend each channel.
+                    uint32_t const o = static_cast<uint32_t>(orig);
+                    int const or_ = (o >> 16) & 0xFF;
+                    int const og  = (o >> 8)  & 0xFF;
+                    int const ob  =  o        & 0xFF;
+                    int const inv_a = 255 - alpha;
+                    int const br = (or_ * inv_a + bw_val * alpha + 127) / 255;
+                    int const bg = (og  * inv_a + bw_val * alpha + 127) / 255;
+                    int const bb = (ob  * inv_a + bw_val * alpha + 127) / 255;
+                    mixed_line[x] = static_cast<MixedPixel>(
+                        0xFF000000u | (br << 16) | (bg << 8) | bb
+                    );
+                }
+            }
+        }
+        mixed_line += mixed_stride;
+        bw_content_line += bw_content_stride;
+        alpha_line += alpha_stride;
     }
 }
 
@@ -450,6 +525,50 @@ OutputGenerator::estimateBinarizationMask(
                     );
 
     return BinaryImage(picture_areas, threshold);
+}
+
+GrayImage
+OutputGenerator::featherMask(BinaryImage const& bw_mask, float sigma)
+{
+    // Convert the binary binarization mask into a soft (grayscale) mask
+    // with feathered transitions at picture zone boundaries.
+    //
+    // The binary mask has sharp 0/1 transitions that produce visible
+    // seams in the output where binarized text abruptly meets color/gray
+    // picture content.  Gaussian blur on the mask creates a smooth
+    // gradient zone ~3*sigma pixels wide on each side of the boundary.
+    //
+    // Convention: 0 = picture zone (keep color), 255 = text zone (binarize).
+    // This matches the binary mask where BLACK (1) = text, WHITE (0) = picture,
+    // but inverted to grayscale levels.
+
+    int const w = bw_mask.width();
+    int const h = bw_mask.height();
+
+    if (w <= 0 || h <= 0) {
+        return GrayImage(QSize(w, h));
+    }
+
+    // Convert: BLACK pixels (text) → 255, WHITE pixels (picture) → 0.
+    GrayImage gray(QSize(w, h));
+    uint8_t* gray_line = gray.data();
+    int const gray_stride = gray.stride();
+    uint32_t const* bw_line = bw_mask.data();
+    int const bw_wpl = bw_mask.wordsPerLine();
+    uint32_t const msb = uint32_t(1) << 31;
+
+    for (int y = 0; y < h; ++y) {
+        for (int x = 0; x < w; ++x) {
+            gray_line[x] = (bw_line[x >> 5] & (msb >> (x & 31))) ? 255 : 0;
+        }
+        gray_line += gray_stride;
+        bw_line += bw_wpl;
+    }
+
+    // Gaussian blur creates the feathered transition.
+    // sigma=2.0 at 300 DPI → ~6 pixel transition zone ≈ 0.5mm,
+    // which is visually smooth but doesn't noticeably blur text.
+    return gaussBlur(gray, sigma, sigma);
 }
 
 void
@@ -1010,15 +1129,17 @@ OutputGenerator::processWithoutDewarping(TaskStatus const& status, FilterData co
         }
 
         if (maybe_normalized.format() == QImage::Format_Indexed8) {
-            combineMixed<uint8_t>(
-                maybe_normalized, bw_content, bw_mask
+            GrayImage const soft_mask(featherMask(bw_mask));
+            combineMixedFeathered<uint8_t>(
+                maybe_normalized, bw_content, soft_mask
             );
         } else {
             assert(maybe_normalized.format() == QImage::Format_RGB32
                    || maybe_normalized.format() == QImage::Format_ARGB32);
 
-            combineMixed<uint32_t>(
-                maybe_normalized, bw_content, bw_mask
+            GrayImage const soft_mask(featherMask(bw_mask));
+            combineMixedFeathered<uint32_t>(
+                maybe_normalized, bw_content, soft_mask
             );
         }
     }
@@ -1722,15 +1843,17 @@ OutputGenerator::processWithDewarping(TaskStatus const& status, FilterData const
         }
 
         if (dewarped.format() == QImage::Format_Indexed8) {
-            combineMixed<uint8_t>(
-                dewarped, dewarped_bw_content, dewarped_bw_mask
+            GrayImage const soft_mask(featherMask(dewarped_bw_mask));
+            combineMixedFeathered<uint8_t>(
+                dewarped, dewarped_bw_content, soft_mask
             );
         } else {
             assert(dewarped.format() == QImage::Format_RGB32
                    || dewarped.format() == QImage::Format_ARGB32);
 
-            combineMixed<uint32_t>(
-                dewarped, dewarped_bw_content, dewarped_bw_mask
+            GrayImage const soft_mask(featherMask(dewarped_bw_mask));
+            combineMixedFeathered<uint32_t>(
+                dewarped, dewarped_bw_content, soft_mask
             );
         }
     }

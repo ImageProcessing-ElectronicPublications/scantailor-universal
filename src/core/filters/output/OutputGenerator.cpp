@@ -203,6 +203,9 @@ void reserveBlackAndWhite(QImage& img)
  * are Indexed8 grayscale, RGB32 and ARGB32.
  * The \p MixedPixel type is uint8_t for Indexed8 grayscale and uint32_t
  * for RGB32 and ARGB32.
+ *
+ * Optimized to process 32 pixels at a time when the mask word is uniform
+ * (all-text or all-picture), which is the common case in scanned documents.
  */
 template<typename MixedPixel>
 void combineMixed(
@@ -218,25 +221,43 @@ void combineMixed(
     int const width = mixed.width();
     int const height = mixed.height();
     uint32_t const msb = uint32_t(1) << 31;
+    int const num_words = (width + 31) >> 5;
 
     for (int y = 0; y < height; ++y) {
-        for (int x = 0; x < width; ++x) {
-            if (bw_mask_line[x >> 5] & (msb >> (x & 31))) {
-                // B/W content.
+        for (int w = 0; w < num_words; ++w) {
+            uint32_t const mask_word = bw_mask_line[w];
+            int const base = w << 5;
+            int const count = std::min(32, width - base);
 
-                uint32_t tmp = bw_content_line[x >> 5];
-                tmp >>= (31 - (x & 31));
-                tmp &= uint32_t(1);
-                // Now it's 0 for white and 1 for black.
-
-                --tmp; // 0 becomes 0xffffffff and 1 becomes 0.
-
-                tmp |= 0xff000000; // Force opacity.
-
-                mixed_line[x] = static_cast<MixedPixel>(tmp);
+            if (mask_word == 0xFFFFFFFF) {
+                // Fast path: entire word is binarized text.
+                // Expand bw_content bits to pixels branchlessly.
+                uint32_t const cw = bw_content_line[w];
+                for (int i = 0; i < count; ++i) {
+                    uint32_t bit = (cw >> (31 - i)) & uint32_t(1);
+                    --bit;              // black(1)→0x00000000, white(0)→0xFFFFFFFF
+                    bit |= 0xFF000000;  // force opacity
+                    mixed_line[base + i] = static_cast<MixedPixel>(bit);
+                }
+            } else if (mask_word == 0) {
+                // Fast path: entire word is picture/color content.
+                for (int i = 0; i < count; ++i) {
+                    mixed_line[base + i] = reserveBlackAndWhite<MixedPixel>(mixed_line[base + i]);
+                }
             } else {
-                // Non-B/W content.
-                mixed_line[x] = reserveBlackAndWhite<MixedPixel>(mixed_line[x]);
+                // Mixed word: per-bit fallback (boundary between zones).
+                uint32_t const cw = bw_content_line[w];
+                for (int i = 0; i < count; ++i) {
+                    uint32_t const bit_mask = msb >> i;
+                    if (mask_word & bit_mask) {
+                        uint32_t bit = (cw >> (31 - i)) & uint32_t(1);
+                        --bit;
+                        bit |= 0xFF000000;
+                        mixed_line[base + i] = static_cast<MixedPixel>(bit);
+                    } else {
+                        mixed_line[base + i] = reserveBlackAndWhite<MixedPixel>(mixed_line[base + i]);
+                    }
+                }
             }
         }
         mixed_line += mixed_stride;

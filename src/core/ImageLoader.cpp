@@ -31,6 +31,7 @@
 #include <QString>
 #include <QIODevice>
 #include <QFile>
+#include <QSize>
 
 QImage
 ImageLoader::load(ImageId const& image_id)
@@ -80,5 +81,73 @@ ImageLoader::load(QIODevice& io_dev, int const page_num)
 
     QImage image;
     QImageReader(&io_dev).read(&image);
+    return image;
+}
+
+QImage
+ImageLoader::loadScaled(ImageId const& image_id, QSize const& max_size)
+{
+    QString const& file_path = image_id.filePath();
+    int const page_num = image_id.zeroBasedPage();
+
+    QFile file(file_path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        return QImage();
+    }
+
+    // For TIFF, PDF, and JP2 we must use the specialized readers
+    // which don't support reduced-resolution loading, so fall back
+    // to the full load path.
+#ifdef ENABLE_MUPDF
+    if (PdfReader::canRead(file)) {
+        QImage image = PdfReader::readImage(file, page_num);
+        if (!image.isNull() && (image.width() > max_size.width()
+                || image.height() > max_size.height())) {
+            image = image.scaled(max_size, Qt::KeepAspectRatio,
+                                 Qt::SmoothTransformation);
+        }
+        return image;
+    }
+#endif
+    if (TiffReader::canRead(file)) {
+        QImage image = TiffReader::readImage(file, page_num);
+        if (!image.isNull() && (image.width() > max_size.width()
+                || image.height() > max_size.height())) {
+            image = image.scaled(max_size, Qt::KeepAspectRatio,
+                                 Qt::SmoothTransformation);
+        }
+        return image;
+    }
+#ifdef ENABLE_OPENJPEG
+    if (Jp2Reader::canRead(file)) {
+        QImage image = Jp2Reader::readImage(file);
+        if (!image.isNull() && (image.width() > max_size.width()
+                || image.height() > max_size.height())) {
+            image = image.scaled(max_size, Qt::KeepAspectRatio,
+                                 Qt::SmoothTransformation);
+        }
+        return image;
+    }
+#endif
+
+    if (page_num != 0) {
+        return QImage();
+    }
+
+    // For formats handled by QImageReader (JPEG, PNG, BMP, etc.),
+    // use setScaledSize() which enables libjpeg's built-in
+    // DCT-domain downscaling (1/2, 1/4, 1/8) for JPEG images.
+    // This avoids decoding the full-resolution image entirely.
+    QImageReader reader(&file);
+    QSize const full_size = reader.size();
+    if (full_size.isValid() && (full_size.width() > max_size.width()
+            || full_size.height() > max_size.height())) {
+        QSize scaled = full_size;
+        scaled.scale(max_size, Qt::KeepAspectRatio);
+        reader.setScaledSize(scaled);
+    }
+
+    QImage image;
+    reader.read(&image);
     return image;
 }

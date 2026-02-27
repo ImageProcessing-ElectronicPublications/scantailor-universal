@@ -439,10 +439,55 @@ OutputGenerator::estimateBinarizationMask(
 
     status.throwIfCancelled();
 
-    BinaryThreshold const threshold(
-        //BinaryThreshold::mokjiThreshold(picture_areas, 5, 26)
-        48
-    );
+    // Adaptive threshold for the picture likelihood map.
+    //
+    // The original hardcoded threshold of 48 worked for typical pages but
+    // was too aggressive on low-contrast scans (false picture detections)
+    // and too conservative on high-contrast photographic content (missed
+    // pictures).  The commented-out mokjiThreshold was presumably abandoned
+    // because it was unreliable on the heavily skewed distribution this
+    // image produces.
+    //
+    // We use Otsu's method, which finds the optimal threshold to separate
+    // two classes (text/background vs. pictures).  Safety bounds [30, 80]
+    // prevent pathological results.  If the image has almost no bright
+    // pixels (no pictures present), we use a high threshold to suppress
+    // noise-driven false positives.
+    BinaryThreshold threshold(48); // fallback
+    {
+        int const w = picture_areas.width();
+        int const h = picture_areas.height();
+        int const total_pixels = w * h;
+
+        if (total_pixels > 0) {
+            // Count pixels above a moderate level.  If fewer than 0.5%
+            // of pixels are bright, there are likely no real pictures —
+            // use a high threshold to avoid false positives from noise.
+            int bright_pixels = 0;
+            uint8_t const* pa_line = picture_areas.data();
+            int const pa_stride = picture_areas.stride();
+            for (int y = 0; y < h; ++y, pa_line += pa_stride) {
+                for (int x = 0; x < w; ++x) {
+                    if (pa_line[x] >= 80) {
+                        ++bright_pixels;
+                    }
+                }
+            }
+
+            if (bright_pixels < total_pixels / 200) {
+                // No significant picture content detected.
+                threshold = BinaryThreshold(80);
+            } else {
+                // Otsu's method on the picture likelihood image.
+                int otsu = BinaryThreshold::otsuThreshold(picture_areas);
+
+                // Clamp to [30, 80] — below 30 classifies too much as
+                // picture (noise), above 80 misses real pictures.
+                otsu = std::max(30, std::min(80, otsu));
+                threshold = BinaryThreshold(otsu);
+            }
+        }
+    }
 
     // Scale back to original size.
     picture_areas = scaleToGray(

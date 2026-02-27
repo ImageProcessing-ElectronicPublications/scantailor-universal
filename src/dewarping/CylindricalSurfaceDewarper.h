@@ -65,6 +65,26 @@ public:
         double depth_perception);
 
     /**
+     * \brief Constructor that automatically estimates depth perception
+     *        from the curvature of the directrix polylines.
+     */
+    CylindricalSurfaceDewarper(
+        std::vector<QPointF> const& img_directrix1,
+        std::vector<QPointF> const& img_directrix2);
+
+    /**
+     * \brief Estimates an appropriate depth perception value from
+     *        the curvature magnitude of two directrix polylines.
+     *
+     * Measures the maximum perpendicular deviation ("sag") of each
+     * directrix from its chord, normalizes by chord length, and maps
+     * the combined curvature to the range [minDepthPerception, maxDepthPerception].
+     */
+    static double estimateDepthPerception(
+        std::vector<QPointF> const& img_directrix1,
+        std::vector<QPointF> const& img_directrix2);
+
+    /**
      * \brief Returns the arc length of a directrix, assuming its
      *        chord length is one.
      */

@@ -100,6 +100,84 @@ CylindricalSurfaceDewarper::CylindricalSurfaceDewarper(
     initArcLengthMapper(img_directrix1, img_directrix2);
 }
 
+CylindricalSurfaceDewarper::CylindricalSurfaceDewarper(
+    std::vector<QPointF> const& img_directrix1,
+    std::vector<QPointF> const& img_directrix2)
+    :   m_pln2img(calcPlnToImgHomography(img_directrix1, img_directrix2)),
+        m_img2pln(m_pln2img.inv()),
+        m_depthPerception(estimateDepthPerception(img_directrix1, img_directrix2)),
+        m_plnStraightLineY(
+            calcPlnStraightLineY(img_directrix1, img_directrix2, m_pln2img, m_img2pln)
+        ),
+        m_directrixArcLength(1.0),
+        m_imgDirectrix1Intersector(img_directrix1),
+        m_imgDirectrix2Intersector(img_directrix2)
+{
+    initArcLengthMapper(img_directrix1, img_directrix2);
+}
+
+double
+CylindricalSurfaceDewarper::estimateDepthPerception(
+    std::vector<QPointF> const& img_directrix1,
+    std::vector<QPointF> const& img_directrix2)
+{
+    // Measure the maximum perpendicular deviation ("sag") of each
+    // directrix from the straight chord connecting its endpoints.
+    // Greater sag indicates more page curvature, requiring higher
+    // depth perception to correctly model the cylindrical surface.
+
+    auto calcRelativeSag = [](std::vector<QPointF> const& polyline) -> double {
+        if (polyline.size() < 3) {
+            return 0.0;
+        }
+
+        QLineF const chord(polyline.front(), polyline.back());
+        double const chord_len = chord.length();
+        if (chord_len < 1.0) {
+            return 0.0;
+        }
+
+        // Unit normal to the chord.
+        double const dx = chord.dx() / chord_len;
+        double const dy = chord.dy() / chord_len;
+
+        double max_deviation = 0.0;
+        for (size_t i = 1; i + 1 < polyline.size(); ++i) {
+            // Signed perpendicular distance from point to chord line.
+            double const vx = polyline[i].x() - polyline.front().x();
+            double const vy = polyline[i].y() - polyline.front().y();
+            double const perp_dist = fabs(vx * dy - vy * dx);
+            if (perp_dist > max_deviation) {
+                max_deviation = perp_dist;
+            }
+        }
+
+        return max_deviation / chord_len;
+    };
+
+    double const sag1 = calcRelativeSag(img_directrix1);
+    double const sag2 = calcRelativeSag(img_directrix2);
+
+    // Use the maximum of the two directrix sags.
+    // Typically both will be similar, but if one is noisy or
+    // truncated, the other provides a better estimate.
+    double const max_sag = std::max(sag1, sag2);
+
+    // Map relative sag to depth perception range [1.0, 3.0].
+    //
+    // Empirical calibration points at 200 DPI processing resolution:
+    //   sag ~0.00 (flat page)            -> depth 1.0
+    //   sag ~0.02 (slight curvature)     -> depth 1.5
+    //   sag ~0.04 (moderate curvature)   -> depth 2.0  (old default)
+    //   sag ~0.06 (strong curvature)     -> depth 2.5
+    //   sag ~0.08+ (near spine)          -> depth 3.0
+    //
+    // Linear mapping: depth = 1.0 + (sag / 0.08) * 2.0
+    // clamped to [1.0, 3.0].
+    double const depth = 1.0 + (max_sag / 0.08) * 2.0;
+    return qBound(1.0, depth, 3.0);
+}
+
 CylindricalSurfaceDewarper::Generatrix
 CylindricalSurfaceDewarper::mapGeneratrix(double crv_x, State& state) const
 {

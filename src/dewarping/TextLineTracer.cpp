@@ -354,8 +354,21 @@ TextLineTracer::extractTextLines(
         dbg->add(visualizeGradient(image, main_grid), "first_dir_deriv");
     }
 
+    // Estimate line spacing from the directional derivative to adapt blur sigmas.
+    // The base sigmas (6.0, 12.0) are tuned for ~33px line spacing at 200 DPI.
+    float const estimated_spacing = estimateLineSpacing(main_grid, width, height);
+    float const default_spacing = 33.0f;
+    float sigma_scale = estimated_spacing / default_spacing;
+
+    // Clamp to a reasonable range to avoid extreme values on
+    // unusual pages (e.g., all-picture or single-line text).
+    sigma_scale = std::max<float>(0.5f, std::min<float>(sigma_scale, 2.5f));
+
+    float const sigma1 = 6.0f * sigma_scale;
+    float const sigma2 = 12.0f * sigma_scale;
+
     gaussBlurGeneric(
-        size, 6.0f, 6.0f,
+        size, sigma1, sigma1,
         main_grid.data(), main_grid.stride(), [=](float val) { return val; },
         main_grid.data(), main_grid.stride(), [=](float& n, float val) { n = val; }
     );
@@ -407,7 +420,7 @@ TextLineTracer::extractTextLines(
     }
 
     gaussBlurGeneric(
-        size, 12.0f, 12.0f,
+        size, sigma2, sigma2,
         aux_grid.data(), aux_grid.stride(), [=](float val) { return val; },
         aux_grid.data(), aux_grid.stride(), [=](float& n, float val) { n = val; }
     );
@@ -510,6 +523,57 @@ TextLineTracer::calcAvgUnitVector(std::pair<QLineF, QLineF> const& bounds)
     v3 /= sqrt(v3.squaredNorm());
 
     return v3;
+}
+
+float
+TextLineTracer::estimateLineSpacing(Grid<float> const& deriv_grid, int const width, int const height)
+{
+    // Compute a row-wise projection profile: sum of absolute derivative values per row.
+    // The periodicity of this profile corresponds to the text line spacing.
+    std::vector<float> profile(height, 0.0f);
+    float const* data = deriv_grid.data();
+    int const stride = deriv_grid.stride();
+
+    for (int y = 0; y < height; ++y) {
+        float row_sum = 0.0f;
+        for (int x = 0; x < width; ++x) {
+            row_sum += std::fabs(data[y * stride + x]);
+        }
+        profile[y] = row_sum;
+    }
+
+    // Autocorrelation to find dominant period.
+    // Typical line spacing at 200 DPI: 15-60 pixels.
+    int const min_lag = 10;
+    int const max_lag = std::min<int>(80, height / 3);
+
+    if (max_lag <= min_lag) {
+        return 33.0f; // Default for very small images.
+    }
+
+    // Compute mean for normalization.
+    float mean = 0.0f;
+    for (int y = 0; y < height; ++y) {
+        mean += profile[y];
+    }
+    mean /= height;
+
+    float best_corr = 0.0f;
+    int best_lag = 33; // Default.
+
+    for (int lag = min_lag; lag <= max_lag; ++lag) {
+        float corr = 0.0f;
+        int n = height - lag;
+        for (int y = 0; y < n; ++y) {
+            corr += (profile[y] - mean) * (profile[y + lag] - mean);
+        }
+        if (corr > best_corr) {
+            best_corr = corr;
+            best_lag = lag;
+        }
+    }
+
+    return static_cast<float>(best_lag);
 }
 
 BinaryImage

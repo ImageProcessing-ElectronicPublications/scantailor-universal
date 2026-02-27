@@ -276,17 +276,23 @@ void PolynomialSurface::prepareDataForLeastSquares(
                 }
             }
 
-            double* p_AtA = AtA_data;
+            // Accumulate upper triangle of AtA only (it's symmetric).
             for (int i = 0; i < num_terms; ++i) {
                 double const i_val = full_powers[i];
                 Atb_data[i] += i_val * data_point;
 
-                for (int j = 0; j < num_terms; ++j) {
-                    double const j_val = full_powers[j];
-                    *p_AtA += i_val * j_val;
-                    ++p_AtA;
+                double* p_col = AtA_data + i * num_terms;
+                for (int j = 0; j <= i; ++j) {
+                    p_col[j] += i_val * full_powers[j];
                 }
             }
+        }
+    }
+
+    // Mirror upper triangle to lower triangle.
+    for (int i = 0; i < num_terms; ++i) {
+        for (int j = i + 1; j < num_terms; ++j) {
+            AtA_data[j * num_terms + i] = AtA_data[i * num_terms + j];
         }
     }
 }
@@ -358,21 +364,27 @@ void PolynomialSurface::prepareDataForLeastSquares(
                 }
             }
 
-            double* p_AtA = AtA_data;
+            // Accumulate upper triangle of AtA only (it's symmetric).
             for (int i = 0; i < num_terms; ++i) {
                 double const i_val = full_powers[i];
                 Atb_data[i] += i_val * data_point;
 
-                for (int j = 0; j < num_terms; ++j) {
-                    double const j_val = full_powers[j];
-                    *p_AtA += i_val * j_val;
-                    ++p_AtA;
+                double* p_col = AtA_data + i * num_terms;
+                for (int j = 0; j <= i; ++j) {
+                    p_col[j] += i_val * full_powers[j];
                 }
             }
         }
 
         image_line += image_stride;
         mask_line += mask_stride;
+    }
+
+    // Mirror upper triangle to lower triangle.
+    for (int i = 0; i < num_terms; ++i) {
+        for (int j = i + 1; j < num_terms; ++j) {
+            AtA_data[j * num_terms + i] = AtA_data[i * num_terms + j];
+        }
     }
 }
 

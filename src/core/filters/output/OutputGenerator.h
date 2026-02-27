@@ -248,6 +248,9 @@ private:
         QRect const& source_rect, QRect const& source_sub_rect,
         DebugImages* const dbg) const;
 
+    static imageproc::GrayImage featherMask(
+        imageproc::BinaryImage const& bw_mask, float sigma = 2.0f);
+
     void modifyBinarizationMask(
         imageproc::BinaryImage& bw_mask,
         QRect const& mask_rect, ZoneSet const& zones,

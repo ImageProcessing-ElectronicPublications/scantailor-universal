@@ -253,9 +253,9 @@ Task::cleanup(TaskStatus const& status, BinaryImage& image, Dpi const& dpi)
 
     status.throwIfCancelled();
 
+    // Remove horizontal shadows (original cleanup).
     QSize const brick(from150dpi(QSize(200, 14), reduced_dpi));
     BinaryImage opened(openBrick(reduced_image, brick, BLACK));
-    reduced_image.release();
 
     status.throwIfCancelled();
 
@@ -270,6 +270,37 @@ Task::cleanup(TaskStatus const& status, BinaryImage& image, Dpi const& dpi)
     status.throwIfCancelled();
 
     rasterOp<RopSubtract<RopDst, RopSrc> >(image, garbage);
+    garbage.release();
+
+    status.throwIfCancelled();
+
+    // Remove large dark regions (pictures/illustrations).
+    // Text characters won't survive an opening with a large square brick,
+    // but solid dark picture regions will. We detect them and subtract.
+    QSize const pic_brick(from150dpi(QSize(20, 20), reduced_dpi));
+    BinaryImage pic_opened(openBrick(reduced_image, pic_brick, BLACK));
+    reduced_image.release();
+
+    status.throwIfCancelled();
+
+    // Dilate slightly to cover the full extent of detected picture regions.
+    QSize const dilate_brick(from150dpi(QSize(30, 30), reduced_dpi));
+    BinaryImage pic_dilated(dilateBrick(pic_opened, dilate_brick, WHITE));
+    pic_opened.release();
+
+    status.throwIfCancelled();
+
+    BinaryImage pic_seed(upscaleIntegerTimes(pic_dilated, image.size(), WHITE));
+    pic_dilated.release();
+
+    status.throwIfCancelled();
+
+    BinaryImage pic_garbage(seedFill(pic_seed, image, CONN8));
+    pic_seed.release();
+
+    status.throwIfCancelled();
+
+    rasterOp<RopSubtract<RopDst, RopSrc> >(image, pic_garbage);
 }
 
 int

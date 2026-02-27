@@ -818,7 +818,10 @@ OutputGenerator::processWithoutDewarping(TaskStatus const& status, FilterData co
             if (render_params.pictureZonesLayer()) {
                 if (!picture_zones.auto_zones_found()) {
                     std::vector<QRect> areas;
-                    bw_mask.rectangularize(WHITE, areas, GlobalStaticSettings::m_picture_detection_sensitivity);
+                    // Scale merge distance proportionally to output DPI.
+                    // The default of 16 was tuned for 300 DPI.
+                    int const merge_dist = std::max(1, 16 * m_dpi.horizontal() / 300);
+                    bw_mask.rectangularize(WHITE, areas, GlobalStaticSettings::m_picture_detection_sensitivity, merge_dist);
 
                     QTransform xform1(m_xform.transform());
                     xform1 *= QTransform().translate(-small_margins_rect.x(), -small_margins_rect.y());
@@ -1232,7 +1235,8 @@ OutputGenerator::processWithDewarping(TaskStatus const& status, FilterData const
         if (render_params.pictureZonesLayer()) {
             if (!picture_zones.auto_zones_found()) {
                 std::vector<QRect> areas;
-                warped_bw_mask.rectangularize(WHITE, areas, GlobalStaticSettings::m_picture_detection_sensitivity);
+                int const merge_dist = std::max(1, 16 * m_dpi.horizontal() / 300);
+                warped_bw_mask.rectangularize(WHITE, areas, GlobalStaticSettings::m_picture_detection_sensitivity, merge_dist);
 
                 QTransform xform1(m_xform.transform());
                 xform1 *= QTransform().translate(-small_margins_rect.x(), -small_margins_rect.y());

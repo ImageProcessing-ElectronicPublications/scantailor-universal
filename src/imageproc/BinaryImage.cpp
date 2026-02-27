@@ -605,7 +605,7 @@ inline const int findPositionOfTheHighestBitSet(uint32_t v)
 }
 
 void
-BinaryImage::rectangularize(BWColor content_color, std::vector<QRect>& areas, int sensitivity)
+BinaryImage::rectangularize(BWColor content_color, std::vector<QRect>& areas, int sensitivity, int merge_distance)
 {
     if (isNull()) {
         return;
@@ -662,7 +662,11 @@ BinaryImage::rectangularize(BWColor content_color, std::vector<QRect>& areas, in
 
     // join adjacent blocks of areas
     bool join = true;
-    int overlap = 16;
+    // The merge distance controls how close two fragments need to be
+    // before they are joined into a single zone.  The old hardcoded
+    // value of 16 was tuned for 300 DPI; callers should now scale
+    // this proportionally to their actual DPI.
+    int overlap = std::max(1, merge_distance);
     while (join) {
         join = false;
         std::vector<QRect> tmp;

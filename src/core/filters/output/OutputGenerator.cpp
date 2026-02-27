@@ -49,6 +49,7 @@
 #include "imageproc/Morphology.h"
 #include "imageproc/Connectivity.h"
 #include "imageproc/ConnCompEraser.h"
+#include "imageproc/ConnCompEraserExt.h"
 #include "imageproc/SeedFill.h"
 #include "imageproc/Constants.h"
 #include "imageproc/Grayscale.h"
@@ -435,6 +436,90 @@ OutputGenerator::estimateBinarizationMask(
 
     // Light areas indicate pictures.
     GrayImage picture_areas(detectPictures(downscaled_input, status, dbg));
+
+    status.throwIfCancelled();
+
+    // Text evidence suppression.
+    //
+    // The gradient-based detector can falsely classify large display
+    // fonts (chapter titles, headings, drop caps) as pictures because
+    // their gradient features are large enough to survive the morphological
+    // opening.  ContentBoxFinder::estimateTextMask() solves this using
+    // fill-factor and UEP analysis, but that result is discarded before
+    // reaching the output stage.
+    //
+    // We perform a lightweight version here: binarize the input,
+    // horizontal closing to connect characters into text-line blobs,
+    // then check each connected component for text-line properties
+    // (fill factor 15-70%, width > 3x height).  Qualifying regions
+    // have their picture likelihood suppressed to zero.
+    {
+        BinaryImage bw_content(downscaled_input, BinaryThreshold::otsuThreshold(downscaled_input));
+
+        // Horizontal closing connects characters within a text line.
+        // 30px at 300 DPI ≈ 2.5mm, bridges inter-character gaps but
+        // does not bridge inter-column gaps.
+        BinaryImage closed(closeBrick(bw_content, QSize(30, 1)));
+
+        int const pa_w = picture_areas.width();
+        int const pa_h = picture_areas.height();
+
+        ConnCompEraserExt eraser(closed, CONN4);
+        for (;;) {
+            ConnComp const cc(eraser.nextConnComp());
+            if (cc.isNull()) {
+                break;
+            }
+
+            QRect const& r = cc.rect();
+
+            // Text lines are significantly wider than tall.
+            if (r.width() < r.height() * 3) {
+                continue;
+            }
+
+            // Skip tiny components (noise).
+            if (r.width() < 20 || r.height() < 4) {
+                continue;
+            }
+
+            // Compute fill factor of original content within this CC's rect.
+            int black_pixels = 0;
+            int total_pixels = r.width() * r.height();
+            uint32_t const* bw_line = bw_content.data() + bw_content.wordsPerLine() * r.top();
+            int const bw_wpl = bw_content.wordsPerLine();
+            uint32_t const msb = uint32_t(1) << 31;
+            for (int y = r.top(); y <= r.bottom(); ++y, bw_line += bw_wpl) {
+                for (int x = r.left(); x <= r.right(); ++x) {
+                    if (bw_line[x >> 5] & (msb >> (x & 31))) {
+                        ++black_pixels;
+                    }
+                }
+            }
+
+            double const fill = (double)black_pixels / total_pixels;
+
+            // Text lines typically have fill factor 15-70%.
+            // Below 15% is mostly whitespace (not a text line).
+            // Above 70% is a solid block (rule, border, filled shape).
+            if (fill < 0.15 || fill > 0.70) {
+                continue;
+            }
+
+            // This CC looks like a text line — suppress picture
+            // likelihood in this region.
+            uint8_t* pa_line = picture_areas.data() + picture_areas.stride() * r.top();
+            int const pa_stride = picture_areas.stride();
+            int const clamp_bottom = std::min(r.bottom(), pa_h - 1);
+            int const clamp_right = std::min(r.right(), pa_w - 1);
+            for (int y = r.top(); y <= clamp_bottom; ++y, pa_line += pa_stride) {
+                for (int x = r.left(); x <= clamp_right; ++x) {
+                    pa_line[x] = 0;
+                }
+            }
+        }
+    }
+
     downscaled_input = GrayImage(); // Save memory.
 
     status.throwIfCancelled();

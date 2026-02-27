@@ -1378,7 +1378,7 @@ OutputGenerator::processWithDewarping(TaskStatus const& status, FilterData const
 
                         QPointF pt(top_x, bottom_polyline.front().y());
 
-                        new_bottom_polyline.push_back(pt);
+                        new_bottom_polyline.push_back(inv_transform.map(pt));
 
                         for (int i = 0; i < (int)bottom_polyline.size(); i++) {
                             new_bottom_polyline.push_back(inv_transform.map(bottom_polyline[i]));
@@ -1390,13 +1390,13 @@ OutputGenerator::processWithDewarping(TaskStatus const& status, FilterData const
 
                         QPointF pt(bottom_x, top_polyline.front().y());
 
-                        new_top_polyline.push_back(pt);
+                        new_top_polyline.push_back(inv_transform.map(pt));
 
                         for (int i = 0; i < (int)top_polyline.size(); i++) {
                             new_top_polyline.push_back(inv_transform.map(top_polyline[i]));
                         }
 
-                        distortion_model.setBottomCurve(dewarping::Curve(new_top_polyline));
+                        distortion_model.setTopCurve(dewarping::Curve(new_top_polyline));
                     }
                 }
             } else {
@@ -1421,7 +1421,7 @@ OutputGenerator::processWithDewarping(TaskStatus const& status, FilterData const
                             new_bottom_polyline.push_back(inv_transform.map(bottom_polyline[i]));
                         }
 
-                        new_bottom_polyline.push_back(pt);
+                        new_bottom_polyline.push_back(inv_transform.map(pt));
 
                         distortion_model.setBottomCurve(dewarping::Curve(new_bottom_polyline));
                     } else {
@@ -1433,9 +1433,9 @@ OutputGenerator::processWithDewarping(TaskStatus const& status, FilterData const
                             new_top_polyline.push_back(inv_transform.map(top_polyline[i]));
                         }
 
-                        new_top_polyline.push_back(pt);
+                        new_top_polyline.push_back(inv_transform.map(pt));
 
-                        distortion_model.setBottomCurve(dewarping::Curve(new_top_polyline));
+                        distortion_model.setTopCurve(dewarping::Curve(new_top_polyline));
                     }
                 }
             }

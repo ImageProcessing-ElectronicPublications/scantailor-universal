@@ -513,18 +513,22 @@ void spreadGrayHorizontal(
 {
     int const src_stride = src.stride();
     int const dst_stride = dst.stride();
-    uint8_t const* src_line = src.data() + dy * src_stride;
-    uint8_t* dst_line = dst.data();
+    uint8_t const* const src_data = src.data() + dy * src_stride;
+    uint8_t* const dst_data = dst.data();
 
     int const dst_width = dst.width();
     int const dst_height = dst.height();
 
     int const se_len = dx2 - dx1 + 1;
 
-    std::vector<uint8_t> min_max_array(se_len * 2 - 1, 0);
-    uint8_t* const array_center = &min_max_array[se_len - 1];
-
+    #pragma omp parallel for schedule(static)
     for (int y = 0; y < dst_height; ++y) {
+        uint8_t const* const src_line = src_data + y * src_stride;
+        uint8_t* const dst_line = dst_data + y * dst_stride;
+
+        std::vector<uint8_t> min_max_array(se_len * 2 - 1, 0);
+        uint8_t* const array_center = &min_max_array[se_len - 1];
+
         for (int dst_segment_first = 0; dst_segment_first < dst_width;
                 dst_segment_first += se_len) {
             int const dst_segment_last = std::min(
@@ -555,9 +559,6 @@ void spreadGrayHorizontal(
                 dst_line[x] = MinOrMax::select(v1, v2);
             }
         }
-
-        src_line += src_stride;
-        dst_line += dst_stride;
     }
 }
 
@@ -591,10 +592,11 @@ void spreadGrayVertical(
 
     int const se_len = dy2 - dy1 + 1;
 
-    std::vector<uint8_t> min_max_array(se_len * 2 - 1, 0);
-    uint8_t* const array_center = &min_max_array[se_len - 1];
-
+    #pragma omp parallel for schedule(static)
     for (int x = 0; x < dst_width; ++x) {
+        std::vector<uint8_t> min_max_array(se_len * 2 - 1, 0);
+        uint8_t* const array_center = &min_max_array[se_len - 1];
+
         for (int dst_segment_first = 0; dst_segment_first < dst_height;
                 dst_segment_first += se_len) {
             int const dst_segment_last = std::min(
@@ -615,7 +617,7 @@ void spreadGrayVertical(
                 src_stride, src_segment_center, src_segment_last
             );
 
-            uint8_t* dst = dst_data + x + dst_segment_first * dst_stride;
+            uint8_t* dst_ptr = dst_data + x + dst_segment_first * dst_stride;
             for (int y = dst_segment_first; y <= dst_segment_last; ++y) {
                 int const src_first = y + dy1;
                 int const src_last = y + dy2; // inclusive
@@ -623,8 +625,8 @@ void spreadGrayVertical(
                 assert(src_segment_center <= src_last);
                 uint8_t v1 = array_center[src_first - src_segment_center];
                 uint8_t v2 = array_center[src_last - src_segment_center];
-                *dst = MinOrMax::select(v1, v2);
-                dst += dst_stride;
+                *dst_ptr = MinOrMax::select(v1, v2);
+                dst_ptr += dst_stride;
             }
         }
     }

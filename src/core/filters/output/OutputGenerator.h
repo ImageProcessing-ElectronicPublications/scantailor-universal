@@ -238,6 +238,11 @@ private:
         imageproc::BinaryImage& mask, QImage const& color_source,
         Dpi const& dpi);
 
+    static void contourize(
+        imageproc::BinaryImage const& mask,
+        std::vector<QPolygonF>& contours,
+        int sensitivity = 100);
+
     imageproc::BinaryImage estimateBinarizationMask(
         TaskStatus const& status, imageproc::GrayImage const& gray_source,
         QRect const& source_rect, QRect const& source_sub_rect,

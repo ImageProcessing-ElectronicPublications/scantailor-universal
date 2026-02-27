@@ -244,6 +244,173 @@ void combineMixed(
     }
 }
 
+}
+
+// --------------- contour tracing helpers ---------------
+
+inline bool pixBlack(BinaryImage const& img, int x, int y)
+{
+    if (x < 0 || x >= img.width() || y < 0 || y >= img.height()) {
+        return false;
+    }
+    uint32_t const* line = img.data() + img.wordsPerLine() * y;
+    uint32_t const msb = uint32_t(1) << 31;
+    return (line[x >> 5] & (msb >> (x & 31))) != 0;
+}
+
+/**
+ * Moore boundary tracing on a single-component binary image.
+ * Traces the outer boundary of BLACK pixels, returning an ordered
+ * polygon of pixel coordinates.
+ */
+QPolygonF traceMooreBoundary(BinaryImage const& ccImg)
+{
+    int const w = ccImg.width();
+    int const h = ccImg.height();
+
+    // 8-connected clockwise: E, SE, S, SW, W, NW, N, NE
+    static int const dx[] = {1, 1, 0, -1, -1, -1, 0, 1};
+    static int const dy[] = {0, 1, 1, 1, 0, -1, -1, -1};
+
+    // Find start: topmost row, leftmost black pixel.
+    int sx = -1, sy = -1;
+    for (int y = 0; y < h && sx < 0; ++y) {
+        for (int x = 0; x < w; ++x) {
+            if (pixBlack(ccImg, x, y)) {
+                sx = x;
+                sy = y;
+                break;
+            }
+        }
+    }
+    if (sx < 0) {
+        return QPolygonF();
+    }
+
+    // Check for isolated pixel — return a unit square.
+    bool hasNeighbor = false;
+    for (int d = 0; d < 8; ++d) {
+        if (pixBlack(ccImg, sx + dx[d], sy + dy[d])) {
+            hasNeighbor = true;
+            break;
+        }
+    }
+    if (!hasNeighbor) {
+        QPolygonF p;
+        p << QPointF(sx, sy) << QPointF(sx + 1, sy)
+          << QPointF(sx + 1, sy + 1) << QPointF(sx, sy + 1);
+        return p;
+    }
+
+    QPolygonF boundary;
+    int cx = sx, cy = sy;
+    // We found start by scanning L→R, so the backtrack pixel is to the west.
+    int backDir = 4; // West
+
+    int const maxIter = w * h + 1;
+    for (int iter = 0; iter < maxIter; ++iter) {
+        boundary.append(QPointF(cx, cy));
+
+        bool found = false;
+        for (int i = 1; i <= 8; ++i) {
+            int const dir = (backDir + i) % 8;
+            int const nx = cx + dx[dir];
+            int const ny = cy + dy[dir];
+            if (pixBlack(ccImg, nx, ny)) {
+                backDir = (dir + 4) % 8;
+                cx = nx;
+                cy = ny;
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            break;
+        }
+        if (cx == sx && cy == sy) {
+            break; // returned to start
+        }
+    }
+
+    return boundary;
+}
+
+/**
+ * Squared perpendicular distance from point p to line segment a–b.
+ */
+double ptLineDistSq(QPointF const& p, QPointF const& a, QPointF const& b)
+{
+    double const abx = b.x() - a.x();
+    double const aby = b.y() - a.y();
+    double const len2 = abx * abx + aby * aby;
+    if (len2 < 1e-12) {
+        double const dx = p.x() - a.x();
+        double const dy = p.y() - a.y();
+        return dx * dx + dy * dy;
+    }
+    double t = ((p.x() - a.x()) * abx + (p.y() - a.y()) * aby) / len2;
+    if (t < 0.0) t = 0.0;
+    else if (t > 1.0) t = 1.0;
+    double const dx = p.x() - (a.x() + t * abx);
+    double const dy = p.y() - (a.y() + t * aby);
+    return dx * dx + dy * dy;
+}
+
+void dpRecurse(
+    QPolygonF const& poly, int first, int last,
+    double epsSq, std::vector<bool>& keep)
+{
+    if (last - first <= 1) {
+        return;
+    }
+    double maxDistSq = 0;
+    int maxIdx = first;
+    for (int i = first + 1; i < last; ++i) {
+        double const d = ptLineDistSq(poly[i], poly[first], poly[last]);
+        if (d > maxDistSq) {
+            maxDistSq = d;
+            maxIdx = i;
+        }
+    }
+    if (maxDistSq > epsSq) {
+        keep[maxIdx] = true;
+        dpRecurse(poly, first, maxIdx, epsSq, keep);
+        dpRecurse(poly, maxIdx, last, epsSq, keep);
+    }
+}
+
+/**
+ * Douglas-Peucker polygon simplification.
+ * For a closed polygon, we split at two anchor points (0 and n/2)
+ * and simplify each arc independently.
+ */
+QPolygonF simplifyDP(QPolygonF const& poly, double epsilon)
+{
+    int const n = poly.size();
+    if (n <= 4) {
+        return poly;
+    }
+
+    double const epsSq = epsilon * epsilon;
+    int const mid = n / 2;
+
+    std::vector<bool> keep(n, false);
+    keep[0] = true;
+    keep[mid] = true;
+    keep[n - 1] = true;
+
+    dpRecurse(poly, 0, mid, epsSq, keep);
+    dpRecurse(poly, mid, n - 1, epsSq, keep);
+
+    QPolygonF result;
+    for (int i = 0; i < n; ++i) {
+        if (keep[i]) {
+            result.append(poly[i]);
+        }
+    }
+    return result;
+}
+
 } // anonymous namespace
 
 OutputGenerator::OutputGenerator(
@@ -1057,18 +1224,16 @@ OutputGenerator::processWithoutDewarping(TaskStatus const& status, FilterData co
             //Picture_Shape
             if (render_params.pictureZonesLayer()) {
                 if (!picture_zones.auto_zones_found()) {
-                    std::vector<QRect> areas;
-                    bw_mask.rectangularize(WHITE, areas, GlobalStaticSettings::m_picture_detection_sensitivity);
+                    std::vector<QPolygonF> contours;
+                    contourize(bw_mask, contours, GlobalStaticSettings::m_picture_detection_sensitivity);
 
                     QTransform xform1(m_xform.transform());
                     xform1 *= QTransform().translate(-small_margins_rect.x(), -small_margins_rect.y());
 
                     QTransform inv_xform(xform1.inverted());
 
-                    for (int i = 0; i < (int)areas.size(); i++) {
-                        QRectF area0(areas[i]);
-                        QPolygonF area1(area0);
-                        QPolygonF area(inv_xform.map(area1));
+                    for (int i = 0; i < (int)contours.size(); i++) {
+                        QPolygonF area(inv_xform.map(contours[i]));
 
                         Zone zone1(area);
 
@@ -1480,18 +1645,16 @@ OutputGenerator::processWithDewarping(TaskStatus const& status, FilterData const
 
         if (render_params.pictureZonesLayer()) {
             if (!picture_zones.auto_zones_found()) {
-                std::vector<QRect> areas;
-                warped_bw_mask.rectangularize(WHITE, areas, GlobalStaticSettings::m_picture_detection_sensitivity);
+                std::vector<QPolygonF> contours;
+                contourize(warped_bw_mask, contours, GlobalStaticSettings::m_picture_detection_sensitivity);
 
                 QTransform xform1(m_xform.transform());
                 xform1 *= QTransform().translate(-small_margins_rect.x(), -small_margins_rect.y());
 
                 QTransform inv_xform(xform1.inverted());
 
-                for (int i = 0; i < (int)areas.size(); i++) {
-                    QRectF area0(areas[i]);
-                    QPolygonF area1(area0);
-                    QPolygonF area(inv_xform.map(area1));
+                for (int i = 0; i < (int)contours.size(); i++) {
+                    QPolygonF area(inv_xform.map(contours[i]));
 
                     Zone zone1(area);
 
@@ -2221,6 +2384,76 @@ OutputGenerator::boostMaskWithChroma(
 
     // OR the chroma detections into the existing gradient-based mask.
     rasterOp<RopOr<RopSrc, RopDst> >(mask, chroma_upscaled);
+}
+
+void
+OutputGenerator::contourize(
+    BinaryImage const& mask, std::vector<QPolygonF>& contours,
+    int sensitivity)
+{
+    // Convert the picture mask to contour polygons that tightly follow
+    // the actual picture boundaries, replacing the axis-aligned rectangles
+    // produced by rectangularize().
+    //
+    // Algorithm:
+    //   1. Morphological close to bridge small gaps between fragments
+    //      of the same picture (similar to rectangularize's 16px merge).
+    //   2. Small dilation to add a safety margin around picture edges.
+    //   3. Connected component iteration.
+    //   4. Moore boundary tracing per component.
+    //   5. Douglas-Peucker simplification to reduce vertex count.
+
+    // Invert: WHITE (picture) → BLACK (foreground for CC iteration).
+    BinaryImage inv(mask.inverted());
+
+    // Close with 15×15 to bridge gaps up to ~14px (comparable to
+    // rectangularize's 16px horizontal merge distance).
+    inv = closeBrick(inv, QSize(15, 15));
+
+    // Dilate by 3×3 to add a 1-pixel margin so the polygon doesn't
+    // cut into the picture edge.
+    inv = dilateBrick(inv, QSize(3, 3));
+
+    // Minimum component area.  Higher sensitivity keeps smaller zones.
+    // At default sensitivity (100): min_area = 500 pixels (~1.4mm²).
+    int const minArea = std::max(100, 500 * (200 - sensitivity) / 100);
+
+    ConnCompEraserExt eraser(inv, CONN8);
+    for (;;) {
+        ConnComp const cc(eraser.nextConnComp());
+        if (cc.isNull()) {
+            break;
+        }
+
+        if (cc.pixCount() < minArea) {
+            continue;
+        }
+
+        BinaryImage ccImg(eraser.computeConnCompImage());
+        QPolygonF boundary(traceMooreBoundary(ccImg));
+
+        if (boundary.size() < 3) {
+            continue;
+        }
+
+        // Douglas-Peucker simplification.  Epsilon of 2 pixels
+        // at 300 DPI ≈ 0.17mm — imperceptible deviation, but
+        // reduces a raw boundary of ~thousands of points to
+        // typically 10-30 vertices.
+        boundary = simplifyDP(boundary, 2.0);
+
+        if (boundary.size() < 3) {
+            continue;
+        }
+
+        // Offset from component-local to mask coordinates.
+        QPointF const offset(cc.rect().topLeft());
+        for (int i = 0; i < boundary.size(); ++i) {
+            boundary[i] += offset;
+        }
+
+        contours.push_back(boundary);
+    }
 }
 
 GrayImage

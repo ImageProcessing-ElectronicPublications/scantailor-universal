@@ -83,6 +83,9 @@ private:
 
     void evolveSnake(Snake& snake, Grid<float> const& gradient, OnConvergence on_convergence) const;
 
+    void evolveSnake(Snake& snake, Grid<float> const& gradient, OnConvergence on_convergence,
+                     Snake const* prev_snake, Snake const* next_snake) const;
+
     QImage visualizeGradient(Grid<float> const& gradient) const;
 
     QImage visualizeSnakes(std::vector<Snake> const& snakes, Grid<float> const* gradient = 0) const;

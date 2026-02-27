@@ -810,6 +810,17 @@ OutputGenerator::processWithoutDewarping(TaskStatus const& status, FilterData co
                           small_margins_rect, dbg
                       );
 
+            // Boost picture mask with color information.
+            // Regions with significant chrominance are almost certainly
+            // pictures, regardless of what the gradient-based detector found.
+            if (!input.origImage().allGray()) {
+                QImage color_output = transform(
+                    input.origImage(), m_xform.transform(),
+                    small_margins_rect, OutsidePixels::assumeColor(Qt::white)
+                );
+                boostMaskWithChroma(bw_mask, color_output, m_dpi);
+            }
+
             if (dbg) {
                 dbg->add(bw_mask, "bw_mask");
             }
@@ -1224,6 +1235,15 @@ OutputGenerator::processWithDewarping(TaskStatus const& status, FilterData const
             normalize_illumination_rect,
             small_margins_rect, dbg
         ).swap(warped_bw_mask);
+
+        // Boost picture mask with color information.
+        if (color_original) {
+            QImage color_output = transform(
+                input.origImage(), m_xform.transform(),
+                small_margins_rect, OutsidePixels::assumeColor(Qt::white)
+            );
+            boostMaskWithChroma(warped_bw_mask, color_output, m_dpi);
+        }
 
         if (dbg) {
             dbg->add(warped_bw_mask, "warped_bw_mask");
@@ -1893,6 +1913,85 @@ OutputGenerator::fillMarginsInPlace(
     if (image.format() == QImage::Format_ARGB32_Premultiplied) {
         image = image.convertToFormat(QImage::Format_ARGB32);
     }
+}
+
+void
+OutputGenerator::boostMaskWithChroma(
+    BinaryImage& mask, QImage const& color_source,
+    Dpi const& dpi)
+{
+    if (color_source.isNull() || color_source.allGray()) {
+        return;
+    }
+
+    QSize const mask_size(mask.size());
+    if (mask_size.isEmpty()) {
+        return;
+    }
+
+    // Downscale the color source to 300 DPI for analysis,
+    // matching the resolution used by detectPictures().
+    QSize const downscaled_size(to300dpi(mask_size, dpi));
+    if (downscaled_size.isEmpty()) {
+        return;
+    }
+
+    QImage small_color = color_source.scaled(
+        downscaled_size, Qt::IgnoreAspectRatio, Qt::SmoothTransformation
+    ).convertToFormat(QImage::Format_RGB32);
+
+    int const w = small_color.width();
+    int const h = small_color.height();
+
+    // Build a binary chroma mask: WHITE = significant color present.
+    // Any pixel with substantial chrominance is almost certainly part
+    // of a picture -- text is black/gray on white/cream background.
+    //
+    // Chroma metric: max(|R-G|, |R-B|, |G-B|).
+    // Threshold of 25 catches visible color while ignoring the slight
+    // warm/cool tint of aged paper or scanner white balance drift.
+    BinaryImage chroma_mask(QSize(w, h), BLACK);
+    int const chroma_thresh = 25;
+
+    for (int y = 0; y < h; ++y) {
+        QRgb const* src_line = reinterpret_cast<QRgb const*>(
+            small_color.constScanLine(y)
+        );
+        for (int x = 0; x < w; ++x) {
+            int const r = qRed(src_line[x]);
+            int const g = qGreen(src_line[x]);
+            int const b = qBlue(src_line[x]);
+            int const rg = abs(r - g);
+            int const rb = abs(r - b);
+            int const gb = abs(g - b);
+            int const chroma = std::max(rg, std::max(rb, gb));
+            if (chroma > chroma_thresh) {
+                chroma_mask.setPixel(x, y, WHITE);
+            }
+        }
+    }
+
+    small_color = QImage(); // Save memory.
+
+    // Morphological close to bridge small gaps within colored regions
+    // (halftone dots, dithering, JPEG artifacts in color areas).
+    chroma_mask = closeBrick(chroma_mask, QSize(5, 5), WHITE);
+
+    // Remove isolated small specks of color (stains, noise).
+    // Opening removes tiny white regions that don't form coherent areas.
+    chroma_mask = openBrick(chroma_mask, QSize(7, 7), WHITE);
+
+    // Scale back to mask dimensions.
+    GrayImage chroma_gray = scaleToGray(
+        GrayImage(chroma_mask.toQImage()), mask_size
+    );
+    chroma_mask = BinaryImage(); // Save memory.
+
+    BinaryImage chroma_upscaled(chroma_gray, BinaryThreshold(128));
+    chroma_gray = GrayImage();
+
+    // OR the chroma detections into the existing gradient-based mask.
+    rasterOp<RopOr<RopSrc, RopDst> >(mask, chroma_upscaled);
 }
 
 GrayImage

@@ -234,6 +234,10 @@ private:
         imageproc::GrayImage const& input_300dpi, TaskStatus const& status,
         DebugImages* dbg = 0);
 
+    static void boostMaskWithChroma(
+        imageproc::BinaryImage& mask, QImage const& color_source,
+        Dpi const& dpi);
+
     imageproc::BinaryImage estimateBinarizationMask(
         TaskStatus const& status, imageproc::GrayImage const& gray_source,
         QRect const& source_rect, QRect const& source_sub_rect,

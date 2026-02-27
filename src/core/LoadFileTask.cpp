@@ -31,6 +31,7 @@
 #include "Dpm.h"
 #include "FilterData.h"
 #include "ImageLoader.h"
+#include "ImageCache.h"
 #include <QCoreApplication>
 #include <QFile>
 #include <QDir>
@@ -79,7 +80,14 @@ LoadFileTask::~LoadFileTask()
 FilterResultPtr
 LoadFileTask::operator()()
 {
-    QImage image(ImageLoader::load(m_imageId));
+    // Check the process-wide image cache first to avoid redundant
+    // disk I/O when the same source image is loaded across multiple
+    // filter pipeline stages.
+    QImage image(ImageCache::instance().get(m_imageId));
+    if (image.isNull()) {
+        image = ImageLoader::load(m_imageId);
+        ImageCache::instance().put(m_imageId, image);
+    }
 
     try {
         throwIfCancelled();

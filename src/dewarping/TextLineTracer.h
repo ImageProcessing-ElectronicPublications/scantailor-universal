@@ -66,6 +66,8 @@ private:
 
     static Vec2f calcAvgUnitVector(std::pair<QLineF, QLineF> const& bounds);
 
+    static float estimateLineSpacing(Grid<float> const& deriv_grid, int width, int height);
+
     static imageproc::BinaryImage closeWithObstacles(
         imageproc::BinaryImage const& image,
         imageproc::BinaryImage const& obstacles, QSize const& brick);

@@ -56,6 +56,7 @@
 #include "imageproc/GrayRasterOp.h"
 #include "imageproc/PolynomialSurface.h"
 #include "imageproc/SavGolFilter.h"
+#include "imageproc/GaussBlur.h"
 #include "imageproc/DrawOver.h"
 #include "imageproc/AdjustBrightness.h"
 #include "imageproc/PolygonRasterizer.h"
@@ -1976,23 +1977,26 @@ OutputGenerator::detectPictures(
 QImage
 OutputGenerator::smoothToGrayscale(QImage const& src, Dpi const& dpi)
 {
+    // Convert to grayscale first (matches the old savGolFilter behavior).
+    GrayImage gray(toGrayscale(src));
+
+    // Choose sigma to approximate the smoothing extent of the former
+    // Savitzky-Golay filter at each DPI bracket.  The Gaussian blur uses
+    // an O(1)-per-pixel IIR implementation regardless of sigma, making it
+    // 10-50x faster than the O(window^2)-per-pixel SavGol polynomial fit.
     int const min_dpi = std::min(dpi.horizontal(), dpi.vertical());
-    int window;
-    int degree;
+    float sigma;
     if (min_dpi <= 200) {
-        window = 5;
-        degree = 3;
+        sigma = 0.8f;    // was SavGol window=5, degree=3
     } else if (min_dpi <= 400) {
-        window = 7;
-        degree = 4;
+        sigma = 1.2f;    // was SavGol window=7, degree=4
     } else if (min_dpi <= 800) {
-        window = 11;
-        degree = 4;
+        sigma = 2.0f;    // was SavGol window=11, degree=4
     } else {
-        window = 11;
-        degree = 2;
+        sigma = 2.0f;    // was SavGol window=11, degree=2
     }
-    return savGolFilter(src, QSize(window, window), degree, degree);
+
+    return gaussBlur(gray, sigma, sigma);
 }
 
 BinaryThreshold

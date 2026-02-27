@@ -342,8 +342,9 @@ void areaMapGeneratrix(
 
                 mixer.add(src_line[src_left], left_area);
 
-                for (int sx = src_left + 1; sx < src_right; ++sx) {
-                    mixer.add(src_line[sx], middle_area);
+                int const middle_count = src_right - src_left - 1;
+                if (middle_count > 0) {
+                    mixer.addRow(&src_line[src_left + 1], middle_count, middle_area);
                 }
 
                 mixer.add(src_line[src_right], right_area);
@@ -381,8 +382,9 @@ void areaMapGeneratrix(
             mixer.add(src_line[src_left], topleft_area);
 
             // process the top line (without corners)
-            for (int sx = src_left + 1; sx < src_right; ++sx) {
-                mixer.add(src_line[sx], top_area);
+            int const middle_count = src_right - src_left - 1;
+            if (middle_count > 0) {
+                mixer.addRow(&src_line[src_left + 1], middle_count, top_area);
             }
 
             // process the top-right corner
@@ -394,8 +396,8 @@ void areaMapGeneratrix(
             for (int sy = src_top + 1; sy < src_bottom; ++sy) {
                 mixer.add(src_line[src_left], left_area);
 
-                for (int sx = src_left + 1; sx < src_right; ++sx) {
-                    mixer.add(src_line[sx], 32 * 32);
+                if (middle_count > 0) {
+                    mixer.addRow(&src_line[src_left + 1], middle_count, 32 * 32);
                 }
 
                 mixer.add(src_line[src_right], right_area);
@@ -407,8 +409,8 @@ void areaMapGeneratrix(
             mixer.add(src_line[src_left], bottomleft_area);
 
             // process the bottom line (without corners)
-            for (int sx = src_left + 1; sx < src_right; ++sx) {
-                mixer.add(src_line[sx], bottom_area);
+            if (middle_count > 0) {
+                mixer.addRow(&src_line[src_left + 1], middle_count, bottom_area);
             }
 
             // process the bottom-right corner

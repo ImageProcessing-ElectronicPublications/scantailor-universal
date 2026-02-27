@@ -67,6 +67,20 @@ public:
         m_accum += AccumType(gray_level) * weight;
     }
 
+    /**
+     * Batch-add a contiguous row of pixels with a constant weight.
+     * The compiler can auto-vectorize this tight loop since the weight
+     * multiply is hoisted out.
+     */
+    void addRow(uint8_t const* pixels, int count, AccumType weight)
+    {
+        AccumType sum = 0;
+        for (int i = 0; i < count; ++i) {
+            sum += AccumType(pixels[i]);
+        }
+        m_accum += sum * weight;
+    }
+
     result_type mix(AccumType total_weight) const
     {
         using namespace color_mixer_impl;
@@ -106,6 +120,20 @@ public:
         m_redAccum += AccumType((rgb >> 16) & 0xFF) * weight;
         m_greenAccum += AccumType((rgb >> 8) & 0xFF) * weight;
         m_blueAccum += AccumType(rgb & 0xFF) * weight;
+    }
+
+    void addRow(uint32_t const* pixels, int count, AccumType weight)
+    {
+        AccumType r = 0, g = 0, b = 0;
+        for (int i = 0; i < count; ++i) {
+            uint32_t const px = pixels[i];
+            r += AccumType((px >> 16) & 0xFF);
+            g += AccumType((px >> 8) & 0xFF);
+            b += AccumType(px & 0xFF);
+        }
+        m_redAccum += r * weight;
+        m_greenAccum += g * weight;
+        m_blueAccum += b * weight;
     }
 
     result_type mix(AccumType total_weight) const
@@ -156,6 +184,22 @@ public:
         m_redAccum += AccumType((argb >> 16) & 0xFF) * weight;
         m_greenAccum += AccumType((argb >> 8) & 0xFF) * weight;
         m_blueAccum += AccumType(argb & 0xFF) * weight;
+    }
+
+    void addRow(uint32_t const* pixels, int count, AccumType weight)
+    {
+        AccumType a = 0, r = 0, g = 0, b = 0;
+        for (int i = 0; i < count; ++i) {
+            uint32_t const px = pixels[i];
+            a += AccumType((px >> 24) & 0xFF);
+            r += AccumType((px >> 16) & 0xFF);
+            g += AccumType((px >> 8) & 0xFF);
+            b += AccumType(px & 0xFF);
+        }
+        m_alphaAccum += a * weight;
+        m_redAccum += r * weight;
+        m_greenAccum += g * weight;
+        m_blueAccum += b * weight;
     }
 
     result_type mix(AccumType total_weight) const

@@ -1912,19 +1912,9 @@ OutputGenerator::detectPictures(
 
     status.throwIfCancelled();
 
+    // Fine-scale gradient (3x3): captures sharp edges.
     GrayImage eroded(erodeGray(stretched, QSize(3, 3), 0x00));
-    if (dbg) {
-        dbg->add(eroded, "eroded");
-    }
-
-    status.throwIfCancelled();
-
     GrayImage dilated(dilateGray(stretched, QSize(3, 3), 0xff));
-    if (dbg) {
-        dbg->add(dilated, "dilated");
-    }
-
-    stretched = GrayImage(); // Save memory.
 
     status.throwIfCancelled();
 
@@ -1932,6 +1922,55 @@ OutputGenerator::detectPictures(
     GrayImage gray_gradient(dilated);
     dilated = GrayImage();
     eroded = GrayImage();
+
+    // Multi-scale gradient analysis.
+    //
+    // The original single-scale 3x3 gradient captures sharp edges well
+    // but responds weakly to gradual intensity transitions found in
+    // photographs with soft focus, watercolors, and smooth gradients.
+    // A coarser 9x9 gradient responds more strongly to these broad
+    // transitions while still capturing text edges.
+    //
+    // We compute the coarse gradient, then take the pixel-wise maximum
+    // with the fine gradient.  This boosts picture regions with gradual
+    // transitions (where the 9x9 gradient is significantly stronger
+    // than the 3x3) while leaving text edges unchanged (both scales
+    // produce similar magnitudes for sharp step edges).
+    //
+    // The combined gradient then goes through the single opening-by-
+    // reconstruction pipeline, which removes text-scale features and
+    // preserves picture-scale features as before.
+    {
+        GrayImage coarse_eroded(erodeGray(stretched, QSize(9, 9), 0x00));
+        GrayImage coarse_dilated(dilateGray(stretched, QSize(9, 9), 0xff));
+
+        status.throwIfCancelled();
+
+        grayRasterOp<CombineInverted>(coarse_dilated, coarse_eroded);
+        // coarse_dilated now holds the coarse gradient.
+        coarse_eroded = GrayImage();
+
+        // Pixel-wise maximum: boost gray_gradient where the coarse
+        // gradient is stronger.
+        int const w = gray_gradient.width();
+        int const h = gray_gradient.height();
+        uint8_t* fine_line = gray_gradient.data();
+        int const fine_stride = gray_gradient.stride();
+        uint8_t const* coarse_line = coarse_dilated.data();
+        int const coarse_stride = coarse_dilated.stride();
+        for (int y = 0; y < h; ++y) {
+            for (int x = 0; x < w; ++x) {
+                if (coarse_line[x] > fine_line[x]) {
+                    fine_line[x] = coarse_line[x];
+                }
+            }
+            fine_line += fine_stride;
+            coarse_line += coarse_stride;
+        }
+    }
+
+    stretched = GrayImage(); // Save memory.
+
     if (dbg) {
         dbg->add(gray_gradient, "gray_gradient");
     }

@@ -86,6 +86,7 @@ SET(
         JpegMetadataLoader.cpp JpegMetadataLoader.h
         GenericMetadataLoader.cpp GenericMetadataLoader.h
         ImageLoader.cpp ImageLoader.h
+        ImageCache.cpp ImageCache.h
         ${pdf_sources}
         OrthogonalRotation.cpp OrthogonalRotation.h
         WorkerThread.cpp WorkerThread.h

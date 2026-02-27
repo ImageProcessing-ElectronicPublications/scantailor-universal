@@ -435,6 +435,108 @@ OutputGenerator::estimateBinarizationMask(
 
     // Light areas indicate pictures.
     GrayImage picture_areas(detectPictures(downscaled_input, status, dbg));
+
+    status.throwIfCancelled();
+
+    // Halftone detection.
+    //
+    // Halftone photographs in older printed material (pre-1990s books,
+    // newspapers, magazines) reproduce continuous-tone images using
+    // regular patterns of small dots.  At 300 DPI, typical halftone
+    // screens (85-150 lpi) produce dots spaced 2-4 pixels apart with
+    // dot diameters of 1-2 pixels.
+    //
+    // The gradient-based detector often fails on halftones because the
+    // gradient is distributed at dot-scale intervals, making the
+    // response look text-like (many small sharp transitions rather
+    // than the broad transitions of a continuous-tone photograph).
+    //
+    // Key insight: halftone dots are much smaller than text character
+    // strokes.  A 3x3 morphological opening destroys most halftone
+    // dots (they don't survive the erosion) but preserves text strokes
+    // (which are wider and connected).  The fraction of black pixels
+    // that disappear after opening — the "vanishing ratio" — is very
+    // high for halftone (>60%) and low for text (<30%).
+    //
+    // Algorithm: binarize, open with 3x3, divide into tiles, compute
+    // vanishing ratio per tile, boost picture likelihood in tiles where
+    // the ratio indicates halftone.
+    {
+        BinaryImage bw_input(downscaled_input,
+            BinaryThreshold::otsuThreshold(downscaled_input));
+        BinaryImage opened(openBrick(bw_input, QSize(3, 3), WHITE));
+
+        int const w = downscaled_input.width();
+        int const h = downscaled_input.height();
+        int const tile_size = 32;
+        int const bw_wpl = bw_input.wordsPerLine();
+        int const op_wpl = opened.wordsPerLine();
+        uint32_t const* bw_data = bw_input.data();
+        uint32_t const* op_data = opened.data();
+        uint32_t const msb = uint32_t(1) << 31;
+
+        uint8_t* pa_data = picture_areas.data();
+        int const pa_stride = picture_areas.stride();
+
+        for (int ty = 0; ty < h; ty += tile_size) {
+            int const y_end = std::min(ty + tile_size, h);
+            for (int tx = 0; tx < w; tx += tile_size) {
+                int const x_end = std::min(tx + tile_size, w);
+                int const tile_area = (y_end - ty) * (x_end - tx);
+
+                // Count black pixels in original and in opened version.
+                int orig_black = 0;
+                int survived_black = 0;
+                for (int y = ty; y < y_end; ++y) {
+                    uint32_t const* bw_line = bw_data + bw_wpl * y;
+                    uint32_t const* op_line = op_data + op_wpl * y;
+                    for (int x = tx; x < x_end; ++x) {
+                        uint32_t const bit = msb >> (x & 31);
+                        int const word = x >> 5;
+                        if (bw_line[word] & bit) {
+                            ++orig_black;
+                        }
+                        if (op_line[word] & bit) {
+                            ++survived_black;
+                        }
+                    }
+                }
+
+                // Skip tiles with negligible content.
+                if (orig_black < tile_area / 20) {  // < 5% density
+                    continue;
+                }
+
+                double const vanishing_ratio =
+                    1.0 - (double)survived_black / orig_black;
+
+                // Halftone: most dots vanish after 3x3 opening.
+                // Text: most strokes survive.
+                // Threshold at 0.55 — halftone typically > 0.65,
+                // text typically < 0.30.  The gap is wide.
+                if (vanishing_ratio < 0.55) {
+                    continue;
+                }
+
+                // Also require minimum dot density (vanished pixels
+                // per tile area) to reject sparse noise.
+                int const vanished = orig_black - survived_black;
+                if (vanished < tile_area / 30) {  // < ~3.3%
+                    continue;
+                }
+
+                // This tile is likely halftone — boost picture
+                // likelihood to maximum.
+                for (int y = ty; y < y_end; ++y) {
+                    uint8_t* pa_line = pa_data + pa_stride * y;
+                    for (int x = tx; x < x_end; ++x) {
+                        pa_line[x] = 0xff;
+                    }
+                }
+            }
+        }
+    }
+
     downscaled_input = GrayImage(); // Save memory.
 
     status.throwIfCancelled();

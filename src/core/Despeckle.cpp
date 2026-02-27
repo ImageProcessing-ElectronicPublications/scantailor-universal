@@ -368,13 +368,28 @@ bool canBeAttachedTo(
     return false;
 }
 
-void voronoi(ConnectivityMap& cmap, std::vector<Distance>& dist)
+/**
+ * Unified Voronoi propagation.
+ *
+ * When \p special is null, this behaves as the original voronoi():
+ *   - \p dist is initialized from scratch (must be empty on entry).
+ *   - Cells occupied in cmap are treated as seeds (distance zero).
+ *
+ * When \p special is non-null, this behaves as the original voronoiSpecial():
+ *   - \p dist is reused (already populated from a previous voronoi call).
+ *   - Cells whose distance equals *special are frozen and never overwritten.
+ */
+static void voronoiImpl(
+    ConnectivityMap& cmap, std::vector<Distance>& dist,
+    Distance const* special)
 {
     int const width = cmap.size().width() + 2;
     int const height = cmap.size().height() + 2;
 
-    assert(dist.empty());
-    dist.resize(width * height, Distance::zero());
+    if (!special) {
+        assert(dist.empty());
+        dist.resize(width * height, Distance::zero());
+    }
 
     std::vector<uint32_t> sqdists(width * 2, 0);
     uint32_t* prev_sqdist_line = &sqdists[0];
@@ -391,8 +406,13 @@ void voronoi(ConnectivityMap& cmap, std::vector<Distance>& dist)
                               - (int(dist_line[x - 1].vec.x) << 1) + 1;
     }
 
+    // When not in special mode, the top-to-bottom scan includes the
+    // last row (y < height).  In special mode it stops one row early
+    // (y < height - 1) because the border row is already initialized.
+    int const tb_end = special ? (height - 1) : height;
+
     // Top to bottom scan.
-    for (int y = 1; y < height; ++y) {
+    for (int y = 1; y < tb_end; ++y) {
         dist_line += width;
         cmap_line += width;
         dist_line[0].reset(0);
@@ -401,192 +421,83 @@ void voronoi(ConnectivityMap& cmap, std::vector<Distance>& dist)
         this_sqdist_line[width - 1] = dist_line[width - 1].sqdist();
         // Left to right scan.
         for (int x = 1; x < width - 1; ++x) {
-            if (cmap_line[x]) {
-                this_sqdist_line[x] = 0;
-                assert(dist_line[x] == Distance::zero());
-                continue;
-            }
-
-            // Propagate from left.
-            Distance left_dist = dist_line[x - 1];
-            uint32_t sqdist_left = this_sqdist_line[x - 1];
-            sqdist_left += 1 - (int(left_dist.vec.x) << 1);
-
-            // Propagate from top.
-            Distance top_dist = dist_line[x - width];
-            uint32_t sqdist_top = prev_sqdist_line[x];
-            sqdist_top += VERTICAL_SCALE_SQ - 2 * VERTICAL_SCALE_SQ * int(top_dist.vec.y);
-
-            if (sqdist_left < sqdist_top) {
-                this_sqdist_line[x] = sqdist_left;
-                --left_dist.vec.x;
-                dist_line[x] = left_dist;
-                cmap_line[x] = cmap_line[x - 1];
+            if (special) {
+                if (dist_line[x] == *special) continue;
+                this_sqdist_line[x] = dist_line[x].sqdist();
             } else {
-                this_sqdist_line[x] = sqdist_top;
-                --top_dist.vec.y;
-                dist_line[x] = top_dist;
-                cmap_line[x] = cmap_line[x - width];
+                if (cmap_line[x]) {
+                    this_sqdist_line[x] = 0;
+                    assert(dist_line[x] == Distance::zero());
+                    continue;
+                }
             }
-        }
-
-        // Right to left scan.
-        for (int x = width - 2; x >= 1; --x) {
-            // Propagate from right.
-            Distance right_dist = dist_line[x + 1];
-            uint32_t sqdist_right = this_sqdist_line[x + 1];
-            sqdist_right += 1 + (int(right_dist.vec.x) << 1);
-
-            if (sqdist_right < this_sqdist_line[x]) {
-                this_sqdist_line[x] = sqdist_right;
-                ++right_dist.vec.x;
-                dist_line[x] = right_dist;
-                cmap_line[x] = cmap_line[x + 1];
-            }
-        }
-
-        std::swap(this_sqdist_line, prev_sqdist_line);
-    }
-
-    // Bottom to top scan.
-    for (int y = height - 2; y >= 1; --y) {
-        dist_line -= width;
-        cmap_line -= width;
-        dist_line[0].reset(0);
-        dist_line[width - 1].reset(width - 1);
-        this_sqdist_line[0] = dist_line[0].sqdist();
-        this_sqdist_line[width - 1] = dist_line[width - 1].sqdist();
-        // Right to left scan.
-        for (int x = width - 2; x >= 1; --x) {
-            // Propagate from right.
-            Distance right_dist = dist_line[x + 1];
-            uint32_t sqdist_right = this_sqdist_line[x + 1];
-            sqdist_right += 1 + (int(right_dist.vec.x) << 1);
-
-            // Propagate from bottom.
-            Distance bottom_dist = dist_line[x + width];
-            uint32_t sqdist_bottom = prev_sqdist_line[x];
-            sqdist_bottom += VERTICAL_SCALE_SQ + 2 * VERTICAL_SCALE_SQ * int(bottom_dist.vec.y);
-
-            this_sqdist_line[x] = dist_line[x].sqdist();
-
-            if (sqdist_right < this_sqdist_line[x]) {
-                this_sqdist_line[x] = sqdist_right;
-                ++right_dist.vec.x;
-                dist_line[x] = right_dist;
-                assert(cmap_line[x] == 0 || cmap_line[x + 1] != 0);
-                cmap_line[x] = cmap_line[x + 1];
-            }
-            if (sqdist_bottom < this_sqdist_line[x]) {
-                this_sqdist_line[x] = sqdist_bottom;
-                ++bottom_dist.vec.y;
-                dist_line[x] = bottom_dist;
-                assert(cmap_line[x] == 0 || cmap_line[x + width] != 0);
-                cmap_line[x] = cmap_line[x + width];
-            }
-        }
-
-        // Left to right scan.
-        for (int x = 1; x < width - 1; ++x) {
-            // Propagate from left.
-            Distance left_dist = dist_line[x - 1];
-            uint32_t sqdist_left = this_sqdist_line[x - 1];
-            sqdist_left += 1 - (int(left_dist.vec.x) << 1);
-
-            if (sqdist_left < this_sqdist_line[x]) {
-                this_sqdist_line[x] = sqdist_left;
-                --left_dist.vec.x;
-                dist_line[x] = left_dist;
-                assert(cmap_line[x] == 0 || cmap_line[x - 1] != 0);
-                cmap_line[x] = cmap_line[x - 1];
-            }
-        }
-
-        std::swap(this_sqdist_line, prev_sqdist_line);
-    }
-}
-
-void voronoiSpecial(ConnectivityMap& cmap, std::vector<Distance>& dist, Distance const special_distance)
-{
-    int const width = cmap.size().width() + 2;
-    int const height = cmap.size().height() + 2;
-
-    std::vector<uint32_t> sqdists(width * 2, 0);
-    uint32_t* prev_sqdist_line = &sqdists[0];
-    uint32_t* this_sqdist_line = &sqdists[width];
-
-    Distance* dist_line = &dist[0];
-    uint32_t* cmap_line = cmap.paddedData();
-
-    dist_line[0].reset(0);
-    prev_sqdist_line[0] = dist_line[0].sqdist();
-    for (int x = 1; x < width; ++x) {
-        dist_line[x].vec.x = dist_line[x - 1].vec.x - 1;
-        prev_sqdist_line[x] = prev_sqdist_line[x - 1]
-                              - (int(dist_line[x - 1].vec.x) << 1) + 1;
-    }
-
-    // Top to bottom scan.
-    for (int y = 1; y < height - 1; ++y) {
-        dist_line += width;
-        cmap_line += width;
-        dist_line[0].reset(0);
-        dist_line[width - 1].reset(width - 1);
-        this_sqdist_line[0] = dist_line[0].sqdist();
-        this_sqdist_line[width - 1] = dist_line[width - 1].sqdist();
-        // Left to right scan.
-        for (int x = 1; x < width - 1; ++x) {
-            if (dist_line[x] == special_distance) {
-                continue;
-            }
-
-            this_sqdist_line[x] = dist_line[x].sqdist();
 
             // Propagate from left.
             Distance left_dist = dist_line[x - 1];
-            if (left_dist != special_distance) {
+            if (!special || left_dist != *special) {
                 uint32_t sqdist_left = this_sqdist_line[x - 1];
                 sqdist_left += 1 - (int(left_dist.vec.x) << 1);
-                if (sqdist_left < this_sqdist_line[x]) {
-                    this_sqdist_line[x] = sqdist_left;
-                    --left_dist.vec.x;
-                    dist_line[x] = left_dist;
-                    assert(cmap_line[x] == 0 || cmap_line[x - 1] != 0);
-                    cmap_line[x] = cmap_line[x - 1];
+                if (!special) {
+                    // In normal mode, left is compared against top below.
+                    // Propagate from top.
+                    Distance top_dist = dist_line[x - width];
+                    uint32_t sqdist_top = prev_sqdist_line[x];
+                    sqdist_top += VERTICAL_SCALE_SQ - 2 * VERTICAL_SCALE_SQ * int(top_dist.vec.y);
+
+                    if (sqdist_left < sqdist_top) {
+                        this_sqdist_line[x] = sqdist_left;
+                        --left_dist.vec.x;
+                        dist_line[x] = left_dist;
+                        cmap_line[x] = cmap_line[x - 1];
+                    } else {
+                        this_sqdist_line[x] = sqdist_top;
+                        --top_dist.vec.y;
+                        dist_line[x] = top_dist;
+                        cmap_line[x] = cmap_line[x - width];
+                    }
+                } else {
+                    if (sqdist_left < this_sqdist_line[x]) {
+                        this_sqdist_line[x] = sqdist_left;
+                        --left_dist.vec.x;
+                        dist_line[x] = left_dist;
+                        assert(cmap_line[x] == 0 || cmap_line[x - 1] != 0);
+                        cmap_line[x] = cmap_line[x - 1];
+                    }
                 }
             }
 
-            // Propagate from top.
-            Distance top_dist = dist_line[x - width];
-            if (top_dist != special_distance) {
-                uint32_t sqdist_top = prev_sqdist_line[x];
-                sqdist_top += VERTICAL_SCALE_SQ - 2 * VERTICAL_SCALE_SQ * int(top_dist.vec.y);
-                if (sqdist_top < this_sqdist_line[x]) {
-                    this_sqdist_line[x] = sqdist_top;
-                    --top_dist.vec.y;
-                    dist_line[x] = top_dist;
-                    assert(cmap_line[x] == 0 || cmap_line[x - width] != 0);
-                    cmap_line[x] = cmap_line[x - width];
+            // Propagate from top (special mode only — normal mode handled above).
+            if (special) {
+                Distance top_dist = dist_line[x - width];
+                if (top_dist != *special) {
+                    uint32_t sqdist_top = prev_sqdist_line[x];
+                    sqdist_top += VERTICAL_SCALE_SQ - 2 * VERTICAL_SCALE_SQ * int(top_dist.vec.y);
+                    if (sqdist_top < this_sqdist_line[x]) {
+                        this_sqdist_line[x] = sqdist_top;
+                        --top_dist.vec.y;
+                        dist_line[x] = top_dist;
+                        assert(cmap_line[x] == 0 || cmap_line[x - width] != 0);
+                        cmap_line[x] = cmap_line[x - width];
+                    }
                 }
             }
         }
 
         // Right to left scan.
         for (int x = width - 2; x >= 1; --x) {
-            if (dist_line[x] == special_distance) {
-                continue;
-            }
+            if (special && dist_line[x] == *special) continue;
 
             // Propagate from right.
             Distance right_dist = dist_line[x + 1];
-            if (right_dist != special_distance) {
+            if (!special || right_dist != *special) {
                 uint32_t sqdist_right = this_sqdist_line[x + 1];
                 sqdist_right += 1 + (int(right_dist.vec.x) << 1);
+
                 if (sqdist_right < this_sqdist_line[x]) {
                     this_sqdist_line[x] = sqdist_right;
                     ++right_dist.vec.x;
                     dist_line[x] = right_dist;
-                    assert(cmap_line[x] == 0 || cmap_line[x + 1] != 0);
+                    assert(!special || cmap_line[x] == 0 || cmap_line[x + 1] != 0);
                     cmap_line[x] = cmap_line[x + 1];
                 }
             }
@@ -605,15 +516,13 @@ void voronoiSpecial(ConnectivityMap& cmap, std::vector<Distance>& dist, Distance
         this_sqdist_line[width - 1] = dist_line[width - 1].sqdist();
         // Right to left scan.
         for (int x = width - 2; x >= 1; --x) {
-            if (dist_line[x] == special_distance) {
-                continue;
-            }
+            if (special && dist_line[x] == *special) continue;
 
             this_sqdist_line[x] = dist_line[x].sqdist();
 
             // Propagate from right.
             Distance right_dist = dist_line[x + 1];
-            if (right_dist != special_distance) {
+            if (!special || right_dist != *special) {
                 uint32_t sqdist_right = this_sqdist_line[x + 1];
                 sqdist_right += 1 + (int(right_dist.vec.x) << 1);
                 if (sqdist_right < this_sqdist_line[x]) {
@@ -627,7 +536,7 @@ void voronoiSpecial(ConnectivityMap& cmap, std::vector<Distance>& dist, Distance
 
             // Propagate from bottom.
             Distance bottom_dist = dist_line[x + width];
-            if (bottom_dist != special_distance) {
+            if (!special || bottom_dist != *special) {
                 uint32_t sqdist_bottom = prev_sqdist_line[x];
                 sqdist_bottom += VERTICAL_SCALE_SQ + 2 * VERTICAL_SCALE_SQ * int(bottom_dist.vec.y);
                 if (sqdist_bottom < this_sqdist_line[x]) {
@@ -642,15 +551,14 @@ void voronoiSpecial(ConnectivityMap& cmap, std::vector<Distance>& dist, Distance
 
         // Left to right scan.
         for (int x = 1; x < width - 1; ++x) {
-            if (dist_line[x] == special_distance) {
-                continue;
-            }
+            if (special && dist_line[x] == *special) continue;
 
             // Propagate from left.
             Distance left_dist = dist_line[x - 1];
-            if (left_dist != special_distance) {
+            if (!special || left_dist != *special) {
                 uint32_t sqdist_left = this_sqdist_line[x - 1];
                 sqdist_left += 1 - (int(left_dist.vec.x) << 1);
+
                 if (sqdist_left < this_sqdist_line[x]) {
                     this_sqdist_line[x] = sqdist_left;
                     --left_dist.vec.x;
@@ -663,6 +571,17 @@ void voronoiSpecial(ConnectivityMap& cmap, std::vector<Distance>& dist, Distance
 
         std::swap(this_sqdist_line, prev_sqdist_line);
     }
+}
+
+// Convenience wrappers matching the original call signatures.
+void voronoi(ConnectivityMap& cmap, std::vector<Distance>& dist)
+{
+    voronoiImpl(cmap, dist, nullptr);
+}
+
+void voronoiSpecial(ConnectivityMap& cmap, std::vector<Distance>& dist, Distance const special_distance)
+{
+    voronoiImpl(cmap, dist, &special_distance);
 }
 
 /**

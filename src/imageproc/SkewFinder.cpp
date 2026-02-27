@@ -215,8 +215,14 @@ SkewFinder::calcScore(BinaryImage const& image)
     int const last_word_idx = (width - 1) >> 5;
     uint32_t const last_word_mask = ~uint32_t(0) << (31 - ((width - 1) & 31));
 
+    // Rows with more than 50% black pixels are almost certainly within
+    // a picture or illustration, not text. Skip them to avoid overwhelming
+    // the text-line alignment signal.
+    int const density_threshold = width / 2;
+
     double score = 0.0;
     int last_line_black_pixels = 0;
+    bool last_line_is_text = false;
     for (int y = 0; y < height; ++y, line += wpl) {
         int num_black_pixels = 0;
         int i = 0;
@@ -225,11 +231,14 @@ SkewFinder::calcScore(BinaryImage const& image)
         }
         num_black_pixels += countNonZeroBits(line[i] & last_word_mask);
 
-        if (y != 0) {
+        bool const is_text = (num_black_pixels < density_threshold);
+
+        if (y != 0 && is_text && last_line_is_text) {
             double const diff = num_black_pixels - last_line_black_pixels;
             score += diff * diff;
         }
         last_line_black_pixels = num_black_pixels;
+        last_line_is_text = is_text;
     }
 
     return score;

@@ -433,40 +433,42 @@ void dewarpGeneric(
     int const dst_width = dst_size.width();
     int const dst_height = dst_size.height();
 
-    CylindricalSurfaceDewarper::State state;
-
     double const model_domain_left = model_domain.left();
     double const model_x_scale = 1.0 / (model_domain.right() - model_domain.left());
 
     float const model_domain_top = model_domain.top();
     float const model_y_scale = 1.0 / (model_domain.bottom() - model_domain.top());
 
-    std::vector<Vec2f> prev_grid_column(dst_height + 1);
-    std::vector<Vec2f> next_grid_column(dst_height + 1);
-
-    for (int dst_x = 0; dst_x <= dst_width; ++dst_x) {
-        double const model_x = (dst_x - model_domain_left) * model_x_scale;
-        CylindricalSurfaceDewarper::Generatrix const generatrix(
-            distortion_model.mapGeneratrix(model_x, state)
-        );
-
-        HomographicTransform<1, float> const homog(generatrix.pln2img.mat());
-        Vec2f const origin(generatrix.imgLine.p1());
-        Vec2f const vec(generatrix.imgLine.p2() - generatrix.imgLine.p1());
-        for (int dst_y = 0; dst_y <= dst_height; ++dst_y) {
-            float const model_y = (float(dst_y) - model_domain_top) * model_y_scale;
-            next_grid_column[dst_y] = origin + vec * homog(model_y);
-        }
-
-        if (dst_x != 0) {
-            areaMapGeneratrix<ColorMixer, PixelType>(
-                src_data, src_size, src_stride,
-                dst_data + dst_x - 1, dst_size, dst_stride,
-                bg_color, prev_grid_column, next_grid_column
+    // Precompute all grid columns sequentially (mapGeneratrix uses
+    // sequential state for interpolation caching).
+    std::vector<std::vector<Vec2f>> grid_columns(dst_width + 1);
+    {
+        CylindricalSurfaceDewarper::State state;
+        for (int dst_x = 0; dst_x <= dst_width; ++dst_x) {
+            grid_columns[dst_x].resize(dst_height + 1);
+            double const model_x = (dst_x - model_domain_left) * model_x_scale;
+            CylindricalSurfaceDewarper::Generatrix const generatrix(
+                distortion_model.mapGeneratrix(model_x, state)
             );
-        }
 
-        prev_grid_column.swap(next_grid_column);
+            HomographicTransform<1, float> const homog(generatrix.pln2img.mat());
+            Vec2f const origin(generatrix.imgLine.p1());
+            Vec2f const vec(generatrix.imgLine.p2() - generatrix.imgLine.p1());
+            for (int dst_y = 0; dst_y <= dst_height; ++dst_y) {
+                float const model_y = (float(dst_y) - model_domain_top) * model_y_scale;
+                grid_columns[dst_x][dst_y] = origin + vec * homog(model_y);
+            }
+        }
+    }
+
+    // Area mapping is now fully parallelizable across columns.
+    #pragma omp parallel for schedule(dynamic)
+    for (int dst_x = 0; dst_x < dst_width; ++dst_x) {
+        areaMapGeneratrix<ColorMixer, PixelType>(
+            src_data, src_size, src_stride,
+            dst_data + dst_x, dst_size, dst_stride,
+            bg_color, grid_columns[dst_x], grid_columns[dst_x + 1]
+        );
     }
 }
 

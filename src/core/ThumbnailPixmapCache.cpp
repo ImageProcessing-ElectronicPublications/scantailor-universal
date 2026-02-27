@@ -686,7 +686,10 @@ ThumbnailPixmapCache::Impl::loadSaveThumbnail(
         return image;
     }
 
-    image = ImageLoader::load(image_id);
+    // Load at reduced resolution when the format supports it.
+    // For JPEG this uses libjpeg's DCT-domain downscaling, avoiding
+    // decoding the full-resolution image entirely.
+    image = ImageLoader::loadScaled(image_id, max_thumb_size);
     if (image.isNull()) {
         return QImage();
     }

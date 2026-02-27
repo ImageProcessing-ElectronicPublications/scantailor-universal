@@ -23,6 +23,7 @@ class ImageId;
 class QImage;
 class QString;
 class QIODevice;
+class QSize;
 
 class ImageLoader
 {
@@ -32,6 +33,14 @@ public:
     static QImage load(ImageId const& image_id);
 
     static QImage load(QIODevice& io_dev, int page_num);
+
+    /**
+     * Load an image at reduced resolution when the format supports it.
+     * For JPEG, this uses libjpeg's built-in DCT-domain downscaling.
+     * For other formats, loads the full image then downscales.
+     * \p max_size The maximum thumbnail dimensions desired.
+     */
+    static QImage loadScaled(ImageId const& image_id, QSize const& max_size);
 };
 
 #endif

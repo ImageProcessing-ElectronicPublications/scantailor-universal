@@ -914,6 +914,19 @@ OutputGenerator::estimateBinarizationMask(
             }
         }
     }
+    BinaryThreshold const threshold(
+        //BinaryThreshold::mokjiThreshold(picture_areas, 5, 26)
+        // Sensitivity-aware threshold.
+        //
+        // The default sensitivity of 100 yields the original threshold
+        // of 48.  Higher sensitivity (up to ~200) lowers the threshold,
+        // classifying more marginal regions as pictures.  Lower
+        // sensitivity raises it, requiring stronger evidence.
+        //
+        // Formula: 48 + (100 - sensitivity) * 0.4, clamped to [20, 80].
+        std::max(20, std::min(80,
+            (int)(48.0 + (100.0 - GlobalStaticSettings::m_picture_detection_sensitivity) * 0.4)))
+    );
 
     // Scale back to original size.
     picture_areas = scaleToGray(

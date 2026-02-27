@@ -226,7 +226,7 @@ void spread8(
 
         // South-Western neighbor.
         seed = pos.seed + (seed_stride & vt.south_mask) + ht.west_delta;
-        mask = pos.mask + (seed_stride & vt.south_mask) + ht.west_delta;
+        mask = pos.mask + (mask_stride & vt.south_mask) + ht.west_delta;
         processNeighbor(
             spread_op, mask_op, queue, this_val, seed, mask,
             pos, ht.west_delta, 1 & vt.south_mask

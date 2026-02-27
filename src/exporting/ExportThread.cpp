@@ -95,7 +95,7 @@ ExportThread::run()
         // the gui becomes so irresponsible that this process is
         // impossible to cancel. So decrease max threads used by 1 and
         // return value back when export is completed.
-        omp_set_num_threads(std::min(1, default_thread_num-1));
+        omp_set_num_threads(std::max(1, default_thread_num-1));
     }
 #endif
 

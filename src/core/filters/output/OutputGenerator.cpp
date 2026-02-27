@@ -1504,11 +1504,11 @@ OutputGenerator::processWithDewarping(TaskStatus const& status, FilterData const
 
         if (pageId.subPage() == PageId::SINGLE_PAGE || pageId.subPage() == PageId::LEFT_PAGE) {
             for (int i = 29 - max_red_points; i < 29; i++) {
-                bottom_spline.appendControlPoint(top_line.pointAt((float)i / 29.0), 1);
+                bottom_spline.appendControlPoint(bottom_line.pointAt((float)i / 29.0), 1);
             }
         } else {
             for (int i = 1; i <= max_red_points; i++) {
-                bottom_spline.appendControlPoint(top_line.pointAt((float)i / 29.0), 1);
+                bottom_spline.appendControlPoint(bottom_line.pointAt((float)i / 29.0), 1);
             }
         }
 

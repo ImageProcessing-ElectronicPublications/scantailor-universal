@@ -96,6 +96,7 @@
 #include "StatusBarProvider.h"
 #include "OpenWithMenuProvider.h"
 #include <QApplication>
+#include <QThread>
 #include <QLineF>
 #include <QPointer>
 #include <QWidget>
@@ -356,6 +357,12 @@ MainWindow::~MainWindow()
         m_ptrBatchQueue->cancelAndClear();
     }
     m_ptrWorkerThread->shutdown();
+
+    // Shutdown any batch worker threads.
+    for (auto& worker : m_batchWorkerThreads) {
+        worker->shutdown();
+    }
+    m_batchWorkerThreads.clear();
 
     removeWidgetsFromLayout(m_pImageFrameLayout);
     removeWidgetsFromLayout(m_pOptionsFrameLayout);
@@ -1446,6 +1453,10 @@ MainWindow::filterSelectionChanged(QItemSelection const& selected)
     if (m_ptrBatchQueue.get()) {
         // Should not happen, but just in case.
         m_ptrBatchQueue->cancelAndClear();
+        for (auto& worker : m_batchWorkerThreads) {
+            worker->shutdown();
+        }
+        m_batchWorkerThreads.clear();
     }
 
     bool const was_below_fix_orientation = isBelowFixOrientation(m_curFilter);
@@ -1596,11 +1607,35 @@ MainWindow::startBatchProcessing()
     filterList->setBatchProcessingInProgress(true);
     filterList->setEnabled(false);
 
-    BackgroundTaskPtr const task(m_ptrBatchQueue->takeForProcessing());
-    if (task) {
-        m_ptrWorkerThread->performTask(task);
-    } else {
+    // Create a pool of worker threads for parallel batch processing.
+    // Cap at the lesser of CPU cores and remaining tasks to avoid waste.
+    int const concurrency = std::max(1,
+        std::min(QThread::idealThreadCount(),
+            static_cast<int>(m_ptrBatchQueue->allProcessed() ? 0 : 8))
+    );
+    m_batchWorkerThreads.clear();
+    for (int i = 0; i < concurrency; ++i) {
+        auto worker = std::unique_ptr<WorkerThread>(new WorkerThread);
+        connect(
+            worker.get(), SIGNAL(taskResult(BackgroundTaskPtr const&, FilterResultPtr const&)),
+            this, SLOT(filterResult(BackgroundTaskPtr const&, FilterResultPtr const&))
+        );
+        m_batchWorkerThreads.push_back(std::move(worker));
+    }
+
+    // Dispatch one task per worker thread.
+    for (int i = 0; i < concurrency; ++i) {
+        BackgroundTaskPtr const task(m_ptrBatchQueue->takeForProcessing());
+        if (task) {
+            m_batchWorkerThreads[i]->performTask(task);
+        } else {
+            break;
+        }
+    }
+
+    if (m_ptrBatchQueue->allProcessed()) {
         stopBatchProcessing();
+        return;
     }
 
     page = m_ptrBatchQueue->selectedPage();
@@ -1626,6 +1661,12 @@ MainWindow::stopBatchProcessing(MainAreaAction main_area)
 
     m_ptrBatchQueue->cancelAndClear();
     m_ptrBatchQueue.reset();
+
+    // Shutdown all batch worker threads.
+    for (auto& worker : m_batchWorkerThreads) {
+        worker->shutdown();
+    }
+    m_batchWorkerThreads.clear();
 
     filterList->setBatchProcessingInProgress(false);
     filterList->setEnabled(true);
@@ -1706,7 +1747,13 @@ MainWindow::filterResult(BackgroundTaskPtr const& task, FilterResultPtr const& r
 
         BackgroundTaskPtr const task(m_ptrBatchQueue->takeForProcessing());
         if (task) {
-            m_ptrWorkerThread->performTask(task);
+            // Dispatch to the worker that just finished, identified via sender().
+            WorkerThread* finished_worker = qobject_cast<WorkerThread*>(sender());
+            if (finished_worker) {
+                finished_worker->performTask(task);
+            } else if (!m_batchWorkerThreads.empty()) {
+                m_batchWorkerThreads[0]->performTask(task);
+            }
         }
 
         PageInfo const page(m_ptrBatchQueue->selectedPage());
@@ -1992,6 +2039,10 @@ MainWindow::ExportOutput(exporting::ExportSettings settings)
     m_ptrInteractiveQueue->cancelAndClear();
     if (m_ptrBatchQueue.get()) { // Should not happen, but just in case.
         m_ptrBatchQueue->cancelAndClear();
+        for (auto& worker : m_batchWorkerThreads) {
+            worker->shutdown();
+        }
+        m_batchWorkerThreads.clear();
     }
 
 // Checking whether all the output thumbnails don't have a question mark on them

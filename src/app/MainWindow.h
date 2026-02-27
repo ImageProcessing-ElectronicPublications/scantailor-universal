@@ -389,6 +389,7 @@ private:
     IntrusivePtr<ThumbnailPixmapCache> m_ptrThumbnailCache;
     std::unique_ptr<ThumbnailSequence> m_ptrThumbSequence;
     std::unique_ptr<WorkerThread> m_ptrWorkerThread;
+    std::vector<std::unique_ptr<WorkerThread>> m_batchWorkerThreads;
     std::unique_ptr<ProcessingTaskQueue> m_ptrBatchQueue;
     std::unique_ptr<ProcessingTaskQueue> m_ptrInteractiveQueue;
     QStackedLayout* m_pImageFrameLayout;

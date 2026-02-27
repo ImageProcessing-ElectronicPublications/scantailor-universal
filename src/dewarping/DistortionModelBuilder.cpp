@@ -218,14 +218,27 @@ DistortionModelBuilder::tryBuildModel(DebugImages* dbg, QImage const* dbg_backgr
         }
     }
 
+    // Also try pairing lines from the top quarter with lines from the
+    // bottom quarter. Widely-separated pairs produce better models.
+    int const quarter = std::max<int>(1, num_curves / 4);
+    for (int i = 0; i < quarter; ++i) {
+        for (int j = num_curves - quarter; j < num_curves; ++j) {
+            if (i < j) {
+                ransac.buildAndAssessModel(&ordered_curves[i], &ordered_curves[j]);
+            }
+        }
+    }
+
     // Continue by throwing in some random pairs of lines.
+    // More iterations improve the chance of finding the optimal top/bottom pair,
+    // especially when many text lines are detected.
 #if QT_VERSION < QT_VERSION_CHECK( 5, 10, 0 )
     qsrand(0); // Repeatablity is important.
 #else
     QRandomGenerator::global()->seed(0);
 #endif
 
-    int random_pairs_remaining = 10;
+    int random_pairs_remaining = 50;
     while (random_pairs_remaining-- > 0) {
 #if QT_VERSION < QT_VERSION_CHECK( 5, 10, 0 )
         int i = qrand() % num_curves;

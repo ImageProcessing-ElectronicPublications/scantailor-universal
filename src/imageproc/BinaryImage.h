@@ -204,7 +204,7 @@ public:
      */
     QRect contentBoundingBox(BWColor content_color = BLACK) const;
 
-    void rectangularize(BWColor content_color, std::vector<QRect>& areas, int sensitivity);
+    void rectangularize(BWColor content_color, std::vector<QRect>& areas, int sensitivity, int merge_distance = 16);
 
     int width() const
     {

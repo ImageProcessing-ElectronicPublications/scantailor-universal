@@ -24,6 +24,7 @@
 #include "ReduceThreshold.h"
 #include "Constants.h"
 #include <QDebug>
+#include <algorithm>
 #include <stdexcept>
 #include <stdint.h>
 #include <math.h>
@@ -193,7 +194,38 @@ SkewFinder::findSkew(BinaryImage const& image) const
         sum_scores += fine_score2;
         confidence = best_score / sum_scores * num_scores;
     }
-    return Skew(-best_angle, confidence - 1.0);
+    confidence -= 1.0;
+
+    // Cross-validate with centroid-slope estimator.
+    // The centroid method is more robust to pictures/illustrations
+    // because uniform-density regions contribute centroids that average
+    // to the image center, while text lines all slant consistently.
+    double centroid_angle = 0.0;
+    double centroid_quality = 0.0;
+    bool const centroid_ok = calcCentroidSkew(
+        image, m_resolutionRatio, centroid_angle, centroid_quality
+    );
+
+    if (centroid_ok && centroid_quality > 0.15) {
+        double const angle_diff = fabs(-best_angle - centroid_angle);
+
+        if (angle_diff < 0.5) {
+            // Methods agree closely -- boost confidence.
+            confidence *= 1.0 + 0.5 * centroid_quality;
+        } else if (angle_diff > 2.0 && centroid_quality > 0.4) {
+            // Strong disagreement with a high-quality centroid estimate.
+            // Pictures likely corrupted the projection-profile result.
+            // Switch to the centroid angle with reduced confidence.
+            best_angle = -centroid_angle;
+            confidence *= 0.5;
+        } else if (angle_diff > 1.0) {
+            // Moderate disagreement -- reduce confidence to flag
+            // the result as uncertain without changing the angle.
+            confidence *= 0.7;
+        }
+    }
+
+    return Skew(-best_angle, confidence);
 }
 
 double
@@ -233,6 +265,126 @@ SkewFinder::calcScore(BinaryImage const& image)
     }
 
     return score;
+}
+
+bool
+SkewFinder::calcCentroidSkew(
+    BinaryImage const& image, double const resolution_ratio,
+    double& angle_degrees, double& quality)
+{
+    int const width = image.width();
+    int const height = image.height();
+    uint32_t const* line = image.data();
+    int const wpl = image.wordsPerLine();
+    int const last_word_idx = (width - 1) >> 5;
+    uint32_t const last_word_mask = ~uint32_t(0) << (31 - ((width - 1) & 31));
+
+    // Weighted least-squares fit of per-row centroids.
+    // We accumulate:
+    //   sum_w   = sum of weights (black pixel counts)
+    //   sum_wy  = sum of weight * y
+    //   sum_wc  = sum of weight * centroid_x
+    //   sum_wyy = sum of weight * y^2
+    //   sum_wyc = sum of weight * y * centroid_x
+    //   sum_wcc = sum of weight * centroid_x^2
+    // Then fit centroid_x = a + b * y via weighted least squares.
+    // The skew angle is atan(b / resolution_ratio).
+
+    double sum_w = 0;
+    double sum_wy = 0;
+    double sum_wc = 0;
+    double sum_wyy = 0;
+    double sum_wyc = 0;
+    double sum_wcc = 0;
+    int rows_with_data = 0;
+
+    // Minimum black pixels per row to include in the fit.
+    // This filters out nearly-empty rows that would add noise.
+    int const min_pixels = std::max(3, width / 100);
+
+    for (int y = 0; y < height; ++y, line += wpl) {
+        // Compute weighted centroid of black pixels in this row.
+        // For each 32-bit word, we need both the count and the
+        // sum of x-positions of set bits.
+        int num_black = 0;
+        double x_sum = 0.0;
+
+        for (int word_idx = 0; word_idx <= last_word_idx; ++word_idx) {
+            uint32_t word = line[word_idx];
+            if (word_idx == last_word_idx) {
+                word &= last_word_mask;
+            }
+            if (word == 0) {
+                continue;
+            }
+            int const base_x = word_idx << 5;
+            // Process bits.  Using bit manipulation for speed.
+            uint32_t w = word;
+            while (w) {
+                // Find highest set bit (MSB = x=0 in the word).
+                int const bit = countNonZeroBits((w & (-w)) - 1);
+                int const x = base_x + (31 - bit);
+                x_sum += x;
+                ++num_black;
+                w &= w - 1; // Clear lowest set bit.
+            }
+        }
+
+        if (num_black < min_pixels) {
+            continue;
+        }
+
+        double const centroid = x_sum / num_black;
+        double const wt = num_black; // Weight = black pixel count.
+
+        sum_w += wt;
+        sum_wy += wt * y;
+        sum_wc += wt * centroid;
+        sum_wyy += wt * y * y;
+        sum_wyc += wt * y * centroid;
+        sum_wcc += wt * centroid * centroid;
+        ++rows_with_data;
+    }
+
+    if (rows_with_data < 10 || sum_w < 1.0) {
+        angle_degrees = 0.0;
+        quality = 0.0;
+        return false;
+    }
+
+    // Weighted least-squares slope: b = (sum_wyc - sum_wy*sum_wc/sum_w) /
+    //                                   (sum_wyy - sum_wy*sum_wy/sum_w)
+    double const denom = sum_wyy - sum_wy * sum_wy / sum_w;
+    if (fabs(denom) < 1e-10) {
+        angle_degrees = 0.0;
+        quality = 0.0;
+        return false;
+    }
+
+    double const slope = (sum_wyc - sum_wy * sum_wc / sum_w) / denom;
+
+    // Convert slope to angle, accounting for resolution ratio.
+    // slope = dx/dy in pixel coords.  If resolution_ratio != 1,
+    // the actual angle is atan(slope / resolution_ratio).
+    angle_degrees = atan(slope / resolution_ratio) * constants::RAD2DEG;
+
+    // Compute R^2 as quality measure.
+    // R^2 = 1 - SS_res / SS_tot  where
+    //   SS_tot = sum_wcc - sum_wc^2/sum_w
+    //   SS_res = SS_tot - (sum_wyc - sum_wy*sum_wc/sum_w)^2 / denom
+    double const ss_tot = sum_wcc - sum_wc * sum_wc / sum_w;
+    if (ss_tot < 1e-10) {
+        // All centroids are the same -- perfectly centered content.
+        quality = 0.0;
+        return true;
+    }
+
+    double const numer = sum_wyc - sum_wy * sum_wc / sum_w;
+    double const ss_res = ss_tot - numer * numer / denom;
+    quality = 1.0 - ss_res / ss_tot;
+    quality = std::max(0.0, std::min(1.0, quality));
+
+    return true;
 }
 
 } // namespace imageproc

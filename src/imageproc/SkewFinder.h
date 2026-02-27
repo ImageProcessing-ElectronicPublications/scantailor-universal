@@ -150,6 +150,20 @@ private:
 
     static double calcScore(BinaryImage const& image);
 
+    /**
+     * \\brief Independent skew estimator using per-row centroid regression.
+     *
+     * Computes the weighted centroid of black pixels per row, then fits
+     * a least-squares line through (centroid_x, y).  The slope gives
+     * the tangent of the skew angle.  Returns the angle in degrees and
+     * a quality metric (R^2 of the fit) via the output parameters.
+     * \\return true if estimation succeeded (enough data for a fit).
+     */
+    static bool calcCentroidSkew(BinaryImage const& image,
+                                 double resolution_ratio,
+                                 double& angle_degrees,
+                                 double& quality);
+
     double m_maxAngle;
     double m_accuracy;
     double m_resolutionRatio;

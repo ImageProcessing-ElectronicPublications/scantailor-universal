@@ -2300,49 +2300,146 @@ OutputGenerator::hitMissReplaceAllDirections(
     imageproc::BinaryImage& img, char const* const pattern,
     int const pattern_width, int const pattern_height)
 {
-    hitMissReplaceInPlace(img, WHITE, pattern, pattern_width, pattern_height);
+    // Parse a rotated pattern into hit/miss/replace point lists and
+    // compute the match image + apply replacements.
+    // This is factored as a lambda to avoid repeating it 4 times.
 
-    std::vector<char> pattern_data(pattern_width * pattern_height, ' ');
-    char* const new_pattern = &pattern_data[0];
+    struct PatternInfo {
+        std::vector<QPoint> hits;
+        std::vector<QPoint> misses;
+        std::vector<QPoint> white_to_black;
+        std::vector<QPoint> black_to_white;
+    };
 
-    // Rotate 90 degrees clockwise.
-    char const* p = pattern;
-    int new_width = pattern_height;
-    int new_height = pattern_width;
+    auto parsePattern = [](char const* pat, int pw, int ph) -> PatternInfo {
+        PatternInfo info;
+        // Find origin at first replacement position (same logic as hitMissReplaceInPlace).
+        int const pat_len = pw * ph;
+        char const* minus_pos = (char const*)memchr(pat, '-', pat_len);
+        char const* plus_pos = (char const*)memchr(pat, '+', pat_len);
+        char const* origin_pos;
+        if (minus_pos && plus_pos)
+            origin_pos = std::min(minus_pos, plus_pos);
+        else if (minus_pos)
+            origin_pos = minus_pos;
+        else if (plus_pos)
+            origin_pos = plus_pos;
+        else
+            return info;
+
+        QPoint const origin(
+            (origin_pos - pat) % pw,
+            (origin_pos - pat) / pw
+        );
+        char const* p = pat;
+        for (int y = 0; y < ph; ++y) {
+            for (int x = 0; x < pw; ++x, ++p) {
+                switch (*p) {
+                case '-':
+                    info.black_to_white.push_back(QPoint(x, y) - origin);
+                    info.hits.push_back(QPoint(x, y) - origin);
+                    break;
+                case 'X':
+                    info.hits.push_back(QPoint(x, y) - origin);
+                    break;
+                case '+':
+                    info.white_to_black.push_back(QPoint(x, y) - origin);
+                    info.misses.push_back(QPoint(x, y) - origin);
+                    break;
+                case ' ':
+                    info.misses.push_back(QPoint(x, y) - origin);
+                    break;
+                case '?':
+                    break;
+                }
+            }
+        }
+        return info;
+    };
+
+    auto applyReplacements = [](BinaryImage& dst, BinaryImage const& matches,
+                                PatternInfo const& info) {
+        QRect const rect(dst.rect());
+        for (QPoint const& offset : info.white_to_black) {
+            QRect dst_rect = rect.translated(offset).intersected(rect);
+            if (dst_rect.isEmpty()) continue;
+            QPoint src_origin = dst_rect.topLeft() - offset;
+            rasterOp<RopOr<RopSrc, RopDst>>(dst, dst_rect, matches, src_origin);
+        }
+        for (QPoint const& offset : info.black_to_white) {
+            QRect dst_rect = rect.translated(offset).intersected(rect);
+            if (dst_rect.isEmpty()) continue;
+            QPoint src_origin = dst_rect.topLeft() - offset;
+            rasterOp<RopSubtract<RopDst, RopSrc>>(dst, dst_rect, matches, src_origin);
+        }
+    };
+
+    // Build all 4 rotated patterns up front.
+    int const pat_len = pattern_width * pattern_height;
+
+    struct RotatedPattern {
+        std::vector<char> data;
+        int width;
+        int height;
+    };
+
+    RotatedPattern rotations[4];
+
+    // Rotation 0: original.
+    rotations[0].data.assign(pattern, pattern + pat_len);
+    rotations[0].width = pattern_width;
+    rotations[0].height = pattern_height;
+
+    // Rotation 1: 90 degrees clockwise.
+    rotations[1].data.resize(pat_len, ' ');
+    rotations[1].width = pattern_height;
+    rotations[1].height = pattern_width;
     for (int y = 0; y < pattern_height; ++y) {
-        for (int x = 0; x < pattern_width; ++x, ++p) {
-            int const new_x = pattern_height - 1 - y;
-            int const new_y = x;
-            new_pattern[new_y * new_width + new_x] = *p;
+        for (int x = 0; x < pattern_width; ++x) {
+            rotations[1].data[x * pattern_height + (pattern_height - 1 - y)] =
+                pattern[y * pattern_width + x];
         }
     }
-    hitMissReplaceInPlace(img, WHITE, new_pattern, new_width, new_height);
 
-    // Rotate upside down.
-    p = pattern;
-    new_width = pattern_width;
-    new_height = pattern_height;
+    // Rotation 2: 180 degrees.
+    rotations[2].data.resize(pat_len, ' ');
+    rotations[2].width = pattern_width;
+    rotations[2].height = pattern_height;
     for (int y = 0; y < pattern_height; ++y) {
-        for (int x = 0; x < pattern_width; ++x, ++p) {
-            int const new_x = pattern_width - 1 - x;
-            int const new_y = pattern_height - 1 - y;
-            new_pattern[new_y * new_width + new_x] = *p;
+        for (int x = 0; x < pattern_width; ++x) {
+            rotations[2].data[(pattern_height - 1 - y) * pattern_width + (pattern_width - 1 - x)] =
+                pattern[y * pattern_width + x];
         }
     }
-    hitMissReplaceInPlace(img, WHITE, new_pattern, new_width, new_height);
 
-    // Rotate 90 degrees counter-clockwise.
-    p = pattern;
-    new_width = pattern_height;
-    new_height = pattern_width;
+    // Rotation 3: 90 degrees counter-clockwise.
+    rotations[3].data.resize(pat_len, ' ');
+    rotations[3].width = pattern_height;
+    rotations[3].height = pattern_width;
     for (int y = 0; y < pattern_height; ++y) {
-        for (int x = 0; x < pattern_width; ++x, ++p) {
-            int const new_x = y;
-            int const new_y = pattern_width - 1 - x;
-            new_pattern[new_y * new_width + new_x] = *p;
+        for (int x = 0; x < pattern_width; ++x) {
+            rotations[3].data[(pattern_width - 1 - x) * pattern_height + y] =
+                pattern[y * pattern_width + x];
         }
     }
-    hitMissReplaceInPlace(img, WHITE, new_pattern, new_width, new_height);
+
+    // Snapshot the image so all 4 rotations match against a consistent
+    // state.  This eliminates false interactions where one rotation's
+    // replacement creates or destroys a match for another rotation.
+    BinaryImage const snapshot(img);
+
+    // Compute matches and apply replacements for all 4 rotations.
+    for (int r = 0; r < 4; ++r) {
+        PatternInfo info = parsePattern(
+            rotations[r].data.data(), rotations[r].width, rotations[r].height);
+
+        if (info.hits.empty() && info.misses.empty()) continue;
+
+        BinaryImage const matches(
+            hitMissMatch(snapshot, WHITE, info.hits, info.misses));
+
+        applyReplacements(img, matches, info);
+    }
 }
 
 QSize

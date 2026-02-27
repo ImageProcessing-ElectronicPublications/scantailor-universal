@@ -1938,7 +1938,76 @@ OutputGenerator::detectPictures(
 
     status.throwIfCancelled();
 
-    GrayImage marker(erodeGray(gray_gradient, QSize(35, 35), 0x00));
+    // Adaptive structuring element size for the opening-by-reconstruction.
+    //
+    // The original hardcoded 35x35 was tuned for ~12pt text at 300 DPI
+    // (line spacing ~33px).  Large display fonts (chapter titles, headings)
+    // have gradient features that survive a 35x35 erosion and get falsely
+    // classified as pictures.  Small dense text (footnotes, CJK) has the
+    // opposite problem -- the SE is too large relative to the features.
+    //
+    // We estimate the dominant text line spacing from the horizontal
+    // projection profile of the gradient image, then set the SE size
+    // to approximately match it.  This ensures the SE always removes
+    // text-scale gradient features while preserving picture-scale ones.
+    int se_size = 35; // default fallback
+    {
+        int const w = gray_gradient.width();
+        int const h = gray_gradient.height();
+
+        if (w > 40 && h > 80) {
+            // Compute horizontal projection profile: sum of gradient
+            // values per row.  Text lines produce periodic peaks.
+            std::vector<double> profile(h, 0.0);
+            uint8_t const* line = gray_gradient.data();
+            int const stride = gray_gradient.stride();
+            for (int y = 0; y < h; ++y, line += stride) {
+                double sum = 0;
+                for (int x = 0; x < w; ++x) {
+                    sum += line[x];
+                }
+                profile[y] = sum;
+            }
+
+            // Autocorrelation to find dominant line spacing.
+            // Search for the first peak between lags 10 and 80 pixels
+            // (at 300 DPI: ~0.85mm to ~6.8mm, covering 6pt to ~50pt text).
+            int const min_lag = 10;
+            int const max_lag = std::min(80, h / 3);
+            double best_corr = 0;
+            int best_lag = 0;
+
+            // Compute mean for zero-centering.
+            double mean = 0;
+            for (int y = 0; y < h; ++y) {
+                mean += profile[y];
+            }
+            mean /= h;
+
+            for (int lag = min_lag; lag <= max_lag; ++lag) {
+                double corr = 0;
+                int const n = h - lag;
+                for (int y = 0; y < n; ++y) {
+                    corr += (profile[y] - mean) * (profile[y + lag] - mean);
+                }
+                if (corr > best_corr) {
+                    best_corr = corr;
+                    best_lag = lag;
+                }
+            }
+
+            if (best_lag >= min_lag) {
+                // SE size ≈ line spacing, clamped to [21, 71] and forced odd.
+                se_size = best_lag;
+                se_size = std::max(21, std::min(71, se_size));
+                if ((se_size & 1) == 0) {
+                    ++se_size;
+                }
+            }
+        }
+    }
+
+    GrayImage marker(erodeGray(gray_gradient, QSize(se_size, se_size), 0x00));
     if (dbg) {
         dbg->add(marker, "marker");
     }

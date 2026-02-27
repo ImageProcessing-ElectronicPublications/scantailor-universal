@@ -21,6 +21,9 @@
 #include <vector>
 #include <iostream>
 #include <assert.h>
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 
 #include "Utils.h"
 #include "ProjectPages.h"
@@ -134,45 +137,46 @@ ConsoleBatch::createCompositeTask(
     IntrusivePtr<page_layout::Task> page_layout_task;
     IntrusivePtr<output::Task> output_task;
 
-    if (batch) {
-        debug = false;
-    }
+    // Use a local variable instead of the member to avoid data races
+    // when called from multiple threads.  In batch mode debug is
+    // always false anyway.
+    bool local_debug = !batch && debug;
 
     if (last_filter_idx >= m_ptrStages->outputFilterIdx()) {
         output_task = m_ptrStages->outputFilter()->createTask(
-                          page.id(), m_ptrThumbnailCache, m_outFileNameGen, batch, debug
+                          page.id(), m_ptrThumbnailCache, m_outFileNameGen, batch, local_debug
                       );
-        debug = false;
+        local_debug = false;
     }
     if (last_filter_idx >= m_ptrStages->pageLayoutFilterIdx()) {
         page_layout_task = m_ptrStages->pageLayoutFilter()->createTask(
-                               page.id(), output_task, batch, debug
+                               page.id(), output_task, batch, local_debug
                            );
-        debug = false;
+        local_debug = false;
     }
     if (last_filter_idx >= m_ptrStages->selectContentFilterIdx()) {
         select_content_task = m_ptrStages->selectContentFilter()->createTask(
-                                  page.id(), page_layout_task, batch, debug
+                                  page.id(), page_layout_task, batch, local_debug
                               );
-        debug = false;
+        local_debug = false;
     }
     if (last_filter_idx >= m_ptrStages->deskewFilterIdx()) {
         deskew_task = m_ptrStages->deskewFilter()->createTask(
-                          page.id(), select_content_task, batch, debug
+                          page.id(), select_content_task, batch, local_debug
                       );
-        debug = false;
+        local_debug = false;
     }
     if (last_filter_idx >= m_ptrStages->pageSplitFilterIdx()) {
         page_split_task = m_ptrStages->pageSplitFilter()->createTask(
-                              page, deskew_task, batch, debug
+                              page, deskew_task, batch, local_debug
                           );
-        debug = false;
+        local_debug = false;
     }
     if (last_filter_idx >= m_ptrStages->fixOrientationFilterIdx()) {
         fix_orientation_task = m_ptrStages->fixOrientationFilter()->createTask(
                                    page.id(), page_split_task, batch
                                );
-        debug = false;
+        local_debug = false;
     }
     assert(fix_orientation_task);
 
@@ -219,12 +223,52 @@ ConsoleBatch::process()
         // process pages
         PageSequence page_sequence = m_ptrPages->toPageSequence(PAGE_VIEW);
         setupFilter(j, page_sequence.asPageIdSet());
+
+        // Copy to a vector for OpenMP random-access iteration.
+        std::vector<PageInfo> pages;
+        pages.reserve(page_sequence.numPages());
         for (const PageInfo& page : page_sequence) {
-            if (cli.isVerbose()) {
+            pages.push_back(page);
+        }
+
+        int const num_pages = static_cast<int>(pages.size());
+        bool const verbose = cli.isVerbose();
+        int pages_done = 0;
+
+#ifdef _OPENMP
+        #pragma omp parallel for schedule(dynamic)
+#endif
+        for (int i = 0; i < num_pages; ++i) {
+            PageInfo const& page = pages[i];
+
+            if (verbose) {
+#ifdef _OPENMP
+                #pragma omp critical(console_output)
+#endif
                 std::cout << "\tProcessing: " << page.imageId().filePath().toLocal8Bit().constData() << "\n";
             }
+
             BackgroundTaskPtr bgTask = createCompositeTask(page, j);
             (*bgTask)();
+
+            if (!verbose) {
+#ifdef _OPENMP
+                int done;
+                #pragma omp atomic capture
+                done = ++pages_done;
+#else
+                int done = ++pages_done;
+#endif
+                if (done % 10 == 0 || done == num_pages) {
+#ifdef _OPENMP
+                    #pragma omp critical(console_output)
+#endif
+                    std::cout << "\r  " << done << "/" << num_pages << " pages" << std::flush;
+                }
+            }
+        }
+        if (!verbose && num_pages > 0) {
+            std::cout << "\n";
         }
     }
 

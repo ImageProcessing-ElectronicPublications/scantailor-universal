@@ -138,40 +138,85 @@ void gaussBlurGeneric(QSize const size, float const h_sigma, float const v_sigma
     float n_p[5], n_m[5], d_p[5], d_m[5], bd_p[5], bd_m[5];
 
     // Vertical pass.
+    // Process columns in strips so that source reads and intermediate
+    // writes access memory sequentially (cache-friendly) rather than
+    // striding across the full image width per pixel.
     gauss_blur_impl::find_iir_constants(n_p, n_m, d_p, d_m, bd_p, bd_m, v_sigma);
-    for (int x = 0; x < width; ++x) {
-        memset(&val_p[0], 0, height * sizeof(val_p[0]));
-        memset(&val_m[0], 0, height * sizeof(val_m[0]));
 
-        SrcIt sp_p(input + x);
-        SrcIt sp_m(sp_p + (height - 1) * input_stride);
-        float* vp = &val_p[0];
-        float* vm = &val_m[0] + height - 1;
-        float const initial_p = float_reader(sp_p[0]);
-        float const initial_m = float_reader(sp_m[0]);
+    int const STRIP_W = 64; // columns per strip; one cache line of uint8_t
+    boost::scoped_array<float> strip_vp(new float[STRIP_W * height]);
 
-        for (int y = 0; y < height; ++y) {
-            int const terms = y < 4 ? y : 4;
-            int i = 0;
-            int sp_off = 0;
-            for (; i <= terms; ++i, sp_off += input_stride) {
-                *vp += n_p[i] * float_reader(sp_p[-sp_off]) - d_p[i] * vp[-i];
-                *vm += n_m[i] * float_reader(sp_m[sp_off]) - d_m[i] * vm[i];
+    for (int x0 = 0; x0 < width; x0 += STRIP_W) {
+        int const sw = (x0 + STRIP_W <= width) ? STRIP_W : (width - x0);
+
+        // --- Phase 1: forward pass (top to bottom) ---
+        // Store results in strip_vp in row-major order: strip_vp[y * sw + dx].
+        memset(&strip_vp[0], 0, sw * height * sizeof(float));
+
+        // Initial values (top row of each column in strip).
+        // We need these for the boundary terms.
+        boost::scoped_array<float> initial_p(new float[sw]);
+        boost::scoped_array<float> initial_m(new float[sw]);
+        {
+            SrcIt src_top(input + x0);
+            SrcIt src_bot(input + x0 + (height - 1) * input_stride);
+            for (int dx = 0; dx < sw; ++dx) {
+                initial_p[dx] = float_reader(src_top[dx]);
+                initial_m[dx] = float_reader(src_bot[dx]);
             }
-            for (; i <= 4; ++i) {
-                *vp += (n_p[i] - bd_p[i]) * initial_p;
-                *vm += (n_m[i] - bd_m[i]) * initial_m;
-            }
-            sp_p += input_stride;
-            sp_m -= input_stride;
-            ++vp;
-            --vm;
         }
 
-        gauss_blur_impl::save(
-            height, &val_p[0], &val_m[0], &intermediate_image[0] + x,
-            intermediate_stride, gauss_blur_impl::FloatToFloatWriter()
-        );
+        for (int y = 0; y < height; ++y) {
+            SrcIt src_row(input + x0 + y * input_stride);
+            float* vp_row = &strip_vp[y * sw];
+            int const terms = y < 4 ? y : 4;
+
+            for (int dx = 0; dx < sw; ++dx) {
+                float val = 0;
+                int i = 0;
+                for (; i <= terms; ++i) {
+                    float src_val = float_reader(src_row[dx - i * input_stride]);
+                    float prev_vp = vp_row[dx - i * sw];
+                    val += n_p[i] * src_val - d_p[i] * prev_vp;
+                }
+                for (; i <= 4; ++i) {
+                    val += (n_p[i] - bd_p[i]) * initial_p[dx];
+                }
+                vp_row[dx] = val;
+            }
+        }
+
+        // --- Phase 2: backward pass (bottom to top) + save ---
+        // Compute val_m on the fly and combine with stored val_p,
+        // writing directly to intermediate_image in row-major order.
+        //
+        // We keep a rolling window of the last 5 val_m rows for the IIR.
+        float vm_hist[5][STRIP_W];
+        memset(vm_hist, 0, sizeof(vm_hist));
+
+        for (int y = height - 1; y >= 0; --y) {
+            SrcIt src_row(input + x0 + y * input_stride);
+            int const terms_from_bottom = (height - 1 - y) < 4 ? (height - 1 - y) : 4;
+            int const cur = y % 5;
+
+            for (int dx = 0; dx < sw; ++dx) {
+                float val = 0;
+                int i = 0;
+                for (; i <= terms_from_bottom; ++i) {
+                    float src_val = float_reader(src_row[dx + i * input_stride]);
+                    float prev_vm = vm_hist[(y + i) % 5][dx];
+                    val += n_m[i] * src_val - d_m[i] * prev_vm;
+                }
+                for (; i <= 4; ++i) {
+                    val += (n_m[i] - bd_m[i]) * initial_m[dx];
+                }
+                vm_hist[cur][dx] = val;
+
+                // Combine forward + backward and write to intermediate.
+                intermediate_image[y * intermediate_stride + x0 + dx] =
+                    strip_vp[y * sw + dx] + val;
+            }
+        }
     }
 
     // Horizontal pass.
